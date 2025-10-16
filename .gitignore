@@ -41,3 +41,8 @@ data/
 # IDEs
 .vscode/
 .idea/
+
+#onnx
+*.onnx
+*.pth
+*.pt
