@@ -1,0 +1,15 @@
+# Dashboard Backend Requirements
+# ===============================
+# Read-only observability backend for federated learning
+
+# Core
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# WebSocket support (included in uvicorn[standard])
+websockets>=11.0
+
+# Optional: CORS middleware (included in fastapi)
+# Optional: async support
+anyio>=3.7.0

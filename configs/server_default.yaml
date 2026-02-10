@@ -1,0 +1,34 @@
+# Federated Server Configuration
+# ================================
+# Configuration for the central federated learning server.
+# This file is loaded by ServerConfig.from_yaml()
+
+# Minimum number of clients before aggregation
+min_clients: 2
+
+# Timeout for a round (seconds)
+# If fewer than min_clients submit but timeout is reached,
+# aggregation proceeds with available updates.
+round_timeout_sec: 300.0
+
+# Timeout before marking a device as stale (seconds)
+stale_device_timeout_sec: 120.0
+
+# Initial model weights path (optional)
+# If not specified, model starts with random weights.
+# model_init_path: models/stgnn_pretrained.pt
+model_init_path: null
+
+# Directory for ONNX model exports
+# Each aggregation produces a versioned ONNX file here.
+onnx_export_dir: outputs/federated/models
+
+# Model architecture configuration
+# These are passed to the STGNN constructor.
+model_kwargs:
+  in_channels: 5       # Input features per node: [x, y, dx, dy, density]
+  hidden_channels: 64  # Hidden dimension
+  out_channels: 2      # Output features: [x, y] predicted positions
+  num_layers: 3        # Number of STGCN blocks
+  dropout: 0.1         # Dropout rate
+  kernel_size: 3       # Temporal kernel size

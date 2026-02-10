@@ -1,0 +1,38 @@
+# Federated Client Configuration
+# ================================
+# Configuration for federated learning on edge devices.
+# This file is loaded by FederatedClientConfig.from_yaml()
+
+# Training interval (seconds)
+# How often the client attempts local training
+training_interval_sec: 60.0
+
+# Heartbeat interval (seconds)
+# How often the client sends heartbeat to server
+heartbeat_interval_sec: 30.0
+
+# Maximum local epochs per training round
+max_local_epochs: 5
+
+# Minimum samples required before training starts
+min_samples_for_training: 32
+
+# Learning rate for local optimizer
+learning_rate: 0.001
+
+# Batch size for local training
+batch_size: 16
+
+# PyTorch device for training
+# Options: "cpu", "cuda", "cuda:0", etc.
+device: "cpu"
+
+# Model architecture configuration
+# These are passed to the STGNN constructor.
+model_kwargs:
+  in_channels: 5       # Input features per node: [x, y, dx, dy, density]
+  hidden_channels: 64  # Hidden dimension
+  out_channels: 2      # Output features: [x, y] predicted positions
+  num_layers: 3        # Number of STGCN blocks
+  dropout: 0.1         # Dropout rate
+  kernel_size: 3       # Temporal kernel size

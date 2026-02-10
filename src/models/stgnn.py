@@ -91,18 +91,18 @@ class STGCNBlock(nn.Module):
         
         # Batch norm and activation
         B, T, N, out_features = x.shape
-        x_flat = x.view(B * T * N, out_features)
+        x_flat = x.reshape(B * T * N, out_features)
         x_flat = self.bn_temporal(x_flat)
-        x = x_flat.view(B, T, N, out_features)
+        x = x_flat.reshape(B, T, N, out_features)
         x = F.relu(x)
         x = self.dropout(x)
         
         # === Residual Connection ===
         if self.residual_proj is not None:
             # Project residual to match output dimensions
-            residual = residual.view(B * T * N, in_features)
+            residual = residual.reshape(B * T * N, in_features)
             residual = self.residual_proj(residual)
-            residual = residual.view(B, T, N, self.out_channels)
+            residual = residual.reshape(B, T, N, self.out_channels)
         
         x = x + residual  # Skip connection
         
