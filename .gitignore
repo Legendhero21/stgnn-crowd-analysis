@@ -14,7 +14,7 @@ __pycache__/
 *.log
 
 # Outputs
-outputs/
+
 src/checkpoints/
 logs/
 runs/

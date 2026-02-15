@@ -1,0 +1,30 @@
+============================================================
+STGNN MODEL EVALUATION REPORT
+============================================================
+
+Timestamp: 2025-10-16 16:33:09
+Checkpoint: D:/stgnn_project/src/checkpoints/stgnn_best.pth
+
+REGRESSION METRICS
+------------------------------------------------------------
+MSE  : 0.037651
+RMSE : 0.194038
+MAE  : 0.142571
+MAE-X: 0.162399
+MAE-Y: 0.122741
+R²   : 0.340204
+
+ANOMALY DETECTION
+------------------------------------------------------------
+F1 Score       : 0.0000
+Threshold      : 0.061413
+Detected       : 137
+Anomaly Rate   : 0.1890
+
+STATISTICS
+------------------------------------------------------------
+Total Sequences    : 25
+Total Frames       : 725
+Successful Frames  : 725
+Skipped Frames     : 0
+Success Rate       : 100.00%

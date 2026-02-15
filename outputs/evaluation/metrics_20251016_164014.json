@@ -1,0 +1,23 @@
+{
+    "mse": 0.03765060007572174,
+    "rmse": 0.1940376254125002,
+    "mae": 0.14257055521011353,
+    "r2": 0.3402036428451538,
+    "mae_x": 0.1623990833759308,
+    "mae_y": 0.12274111807346344,
+    "f1_anomaly": 0.0,
+    "anomaly_threshold": 0.06141342595219612,
+    "detected_anomalies": 137,
+    "anomaly_rate": 0.1889655172413793,
+    "pred_mean": 0.5138720870018005,
+    "pred_std": 0.12859798967838287,
+    "true_mean": 0.5057880878448486,
+    "true_std": 0.23731617629528046,
+    "stats": {
+        "total_sequences": 25,
+        "total_frames": 725,
+        "skipped_frames": 0,
+        "successful_frames": 725,
+        "errors": []
+    }
+}

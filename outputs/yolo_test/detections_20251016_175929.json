@@ -1,0 +1,196 @@
+{
+  "timestamp": "2025-10-16 17:59:19",
+  "config": {
+    "conf_threshold": 0.25,
+    "iou_threshold": 0.45,
+    "model": "yolo11n.onnx"
+  },
+  "sequences": {
+    "00010": {
+      "stats": {
+        "frames_processed": 10,
+        "total_frames": 10,
+        "avg_persons_per_frame": 0.0,
+        "max_persons": 0,
+        "min_persons": 0,
+        "std_persons": 0.0
+      },
+      "frames": {
+        "00001.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00002.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00003.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00004.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00005.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00006.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00007.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00008.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00009.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00010.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        }
+      }
+    },
+    "00011": {
+      "stats": {
+        "frames_processed": 10,
+        "total_frames": 10,
+        "avg_persons_per_frame": 0.0,
+        "max_persons": 0,
+        "min_persons": 0,
+        "std_persons": 0.0
+      },
+      "frames": {
+        "00001.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00002.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00003.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00004.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00005.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00006.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00007.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00008.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00009.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00010.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        }
+      }
+    },
+    "00012": {
+      "stats": {
+        "frames_processed": 10,
+        "total_frames": 10,
+        "avg_persons_per_frame": 0.0,
+        "max_persons": 0,
+        "min_persons": 0,
+        "std_persons": 0.0
+      },
+      "frames": {
+        "00001.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00002.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00003.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00004.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00005.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00006.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00007.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00008.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00009.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00010.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,238 @@
+{
+  "timestamp": "2025-10-16 18:10:13",
+  "config": {
+    "conf_threshold": 0.07,
+    "iou_threshold": 0.25,
+    "model": "yolo11n.onnx"
+  },
+  "sequences": {
+    "00010": {
+      "stats": {
+        "frames_processed": 10,
+        "total_frames": 10,
+        "avg_persons_per_frame": 0.3,
+        "max_persons": 1,
+        "min_persons": 0,
+        "std_persons": 0.45825756949558405
+      },
+      "frames": {
+        "00001.jpg": {
+          "num_persons": 1,
+          "centers": [
+            [
+              813.7449340820312,
+              755.8106689453125
+            ]
+          ],
+          "boxes": [
+            [
+              753.904052734375,
+              669.6973876953125,
+              873.5858154296875,
+              841.9239501953125,
+              0.19509738683700562,
+              0.0
+            ]
+          ]
+        },
+        "00002.jpg": {
+          "num_persons": 1,
+          "centers": [
+            [
+              819.793701171875,
+              754.5245666503906
+            ]
+          ],
+          "boxes": [
+            [
+              767.328857421875,
+              668.4561767578125,
+              872.258544921875,
+              840.5929565429688,
+              0.08516228199005127,
+              0.0
+            ]
+          ]
+        },
+        "00003.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00004.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00005.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00006.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00007.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00008.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00009.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00010.jpg": {
+          "num_persons": 1,
+          "centers": [
+            [
+              809.70703125,
+              754.7617797851562
+            ]
+          ],
+          "boxes": [
+            [
+              745.9501953125,
+              667.484619140625,
+              873.4638671875,
+              842.0389404296875,
+              0.11393558979034424,
+              0.0
+            ]
+          ]
+        }
+      }
+    },
+    "00011": {
+      "stats": {
+        "frames_processed": 10,
+        "total_frames": 10,
+        "avg_persons_per_frame": 0.0,
+        "max_persons": 0,
+        "min_persons": 0,
+        "std_persons": 0.0
+      },
+      "frames": {
+        "00001.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00002.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00003.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00004.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00005.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00006.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00007.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00008.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00009.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00010.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        }
+      }
+    },
+    "00012": {
+      "stats": {
+        "frames_processed": 10,
+        "total_frames": 10,
+        "avg_persons_per_frame": 0.0,
+        "max_persons": 0,
+        "min_persons": 0,
+        "std_persons": 0.0
+      },
+      "frames": {
+        "00001.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00002.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00003.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00004.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00005.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00006.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00007.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00008.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00009.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        },
+        "00010.jpg": {
+          "num_persons": 0,
+          "centers": [],
+          "boxes": []
+        }
+      }
+    }
+  }
+}
