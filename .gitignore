@@ -28,8 +28,6 @@ data/
 */processed/*
 
 # Model weights
-*.pt
-*.pth
 *.npy
 *.npz
 *.h5
@@ -43,6 +41,4 @@ data/
 .idea/
 
 #onnx
-*.onnx
-*.pth
-*.pt
+
