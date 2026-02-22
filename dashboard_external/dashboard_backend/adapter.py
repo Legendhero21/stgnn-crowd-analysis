@@ -129,6 +129,24 @@ class DashboardAdapter:
         """List of observed device IDs."""
         return list(self._clients.keys())
     
+    def get_edge_client(self, device_id: str) -> Optional[Any]:
+        """
+        Get the EdgeClient instance for a given device ID.
+        
+        Used by the video streaming endpoint to access raw frames.
+        
+        Args:
+            device_id: Device identifier.
+            
+        Returns:
+            EdgeClient instance or None if not found.
+        """
+        client = self._clients.get(device_id)
+        if client is None:
+            return None
+        # FederatedClient wraps EdgeClient as _edge_client
+        return getattr(client, '_edge_client', None)
+    
     # ================================================================
     # EDGE METRICS (from EdgeClient)
     # ================================================================
@@ -150,9 +168,8 @@ class DashboardAdapter:
             return None
         
         try:
-            # Access edge_client via public property (if available)
-            # Otherwise use get_stats which includes edge info
-            edge_client = getattr(client, 'edge_client', None)
+            # Access edge_client via FederatedClient's internal attribute
+            edge_client = getattr(client, '_edge_client', None)
             
             if edge_client is None:
                 # Fallback: client doesn't expose edge_client
@@ -174,9 +191,9 @@ class DashboardAdapter:
                 anomaly_score=result.anomaly_score,
                 alert_state=AlertState(result.alert_state),
                 model_version=result.model_version,
-                crowd_density=metrics.get("density", 0.0),
-                avg_velocity=metrics.get("avg_velocity", 0.0),
-                flow_magnitude=metrics.get("flow_magnitude", 0.0),
+                crowd_density=metrics.get("mean_density", 0.0),
+                avg_velocity=metrics.get("mean_speed", 0.0),
+                flow_magnitude=metrics.get("motion_entropy", 0.0),
                 processing_time_ms=result.processing_time_ms,
             )
             

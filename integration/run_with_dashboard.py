@@ -4,12 +4,15 @@ Federated Learning + Dashboard Integration
 -------------------------------------------
 Runs the complete federated system with real-time dashboard observability.
 
+Phase 6: Full real edge pipeline.
+Each edge runs: Video → YOLO → GraphBuilder → TemporalBuffer → STGNN ONNX → Alert
+
 This script:
 1. Starts FederatedServer
-2. Starts N FederatedClients (with mock EdgeClients)
+2. Starts N FederatedClients with REAL EdgeClients (YOLO + ONNX)
 3. Injects adapter into dashboard backend
 4. Runs FastAPI server in background thread
-5. Runs federated simulation
+5. Runs federated simulation with real edge processing
 
 The dashboard receives REAL data from the live system.
 
@@ -18,17 +21,16 @@ Usage:
     
     # Then open browser to http://127.0.0.1:8000/api/snapshot
     # Or connect WebSocket to ws://127.0.0.1:8000/ws/analytics
+    # Video stream:  http://127.0.0.1:8000/video/edge_00
 """
 
 from __future__ import annotations
-import cv2
 import argparse
 import logging
 import os
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,13 +42,12 @@ _backend_dir = _project_root / "dashboard_external" / "dashboard_backend"
 sys.path.insert(0, str(_src_dir))
 sys.path.insert(0, str(_backend_dir.parent))
 
-import numpy as np
-import torch
-
-# Import from core system (LOCKED Phase 1-4)
+# Import from core system
 from federated.server import FederatedServer, ServerConfig
 from federated.client import FederatedClient, FederatedClientConfig, LocalTrainer
 from federated.transport import LocalTransport
+from federated.edge.client import EdgeClient
+from federated.edge.config import create_simulation_config
 from models.stgnn import STGNN
 
 # Import dashboard components
@@ -65,192 +66,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# MOCK EDGE CLIENT (for simulation without video)
-# ============================================================
 
-@dataclass  
-class MockFrameResult:
-    """Simulated frame result."""
-    frame_idx: int
-    timestamp_ms: float
-    centers: List[tuple]
-    num_persons: int
-    graph: Optional[dict]
-    anomaly_score: float
-    metrics: Dict[str, float]
-    alert_state: str
-    model_version: int
-    processing_time_ms: float
-
-
-class MockTrainingBuffer:
-    """Simulated training buffer with synthetic data."""
-    
-    def __init__(self, num_samples: int = 100):
-        self._samples = []
-        self._generate_samples(num_samples)
-    
-
-    def _generate_samples(self, n: int) -> None:
-        for _ in range(n):
-            # T=5, N=10-30 random nodes, F=5 features
-            num_nodes = np.random.randint(10, 30)
-            x_seq = np.random.randn(5, num_nodes, 5).astype(np.float32)
-            y = np.random.randn(num_nodes, 1).astype(np.float32)
-            edge_index = np.random.randint(0, num_nodes, (2, num_nodes * 2))
-            self._samples.append((x_seq, y, edge_index))
-    
-    def __len__(self) -> int:
-        return len(self._samples)
-    
-    def get_batch(self, batch_size: int) -> Optional[tuple]:
-        if len(self._samples) < batch_size:
-            return None
-        batch = self._samples[:batch_size]
-        self._samples = self._samples[batch_size:]
-        return batch
-    
-    def iter_batches(self, batch_size: int):
-        """Yield batches for training in (x_seq, edge_index, target) format."""
-        for i in range(0, len(self._samples), batch_size):
-            batch = self._samples[i:i + batch_size]
-            if not batch:
-                break
-            # Combine batch into tensors
-            # Shape: [B, T, N, F] but trainer expects [1, T, N, F]
-            # For simplicity, yield one sample at a time as [1, T, N, F]
-            for x_seq, target, edge_index in batch:
-                x_tensor = torch.tensor(x_seq).unsqueeze(0)  # [1, T, N, F]
-                edge_tensor = torch.tensor(edge_index, dtype=torch.long)
-                target_tensor = torch.tensor(target).unsqueeze(0)  # [1, N, out_dim]
-                yield x_tensor, edge_tensor, target_tensor
-    
-    def clear(self) -> None:
-        self._samples.clear()
-    
-    def get_stats(self) -> dict:
-        return {"size": len(self._samples), "capacity": 1000}
-
-
-class MockEdgeClient:
-    """
-    Simulated EdgeClient for integration testing.
-    
-    Generates fake metrics without video/YOLO/ONNX.
-    """
-    
-    def __init__(self, device_id: str,video_path: Path, num_samples: int = 100):
-        self._device_id = device_id
-        self._is_initialized = False
-        self._is_running = False
-        self._training_buffer = MockTrainingBuffer(num_samples)
-        self._model_version = 0
-        self._frame_idx = 0
-        self._latest_result: Optional[MockFrameResult] = None
-        self._lock = threading.Lock()
-        self._start_time: Optional[float] = None
-        self._video_path = video_path
-        self._cap = cv2.VideoCapture(str(video_path))
-        if not self._cap.isOpened():
-            raise RuntimeError(f"Failed to open video: {video_path}")
-    
-    @property
-    def device_id(self) -> str:
-        return self._device_id
-    
-    @property
-    def training_buffer(self):
-        return self._training_buffer
-    
-    @property
-    def is_initialized(self) -> bool:
-        return self._is_initialized
-    
-    @property
-    def model_version(self) -> int:
-        return self._model_version
-    
-    def initialize(self) -> bool:
-        self._is_initialized = True
-        self._start_time = time.time()
-        logger.info("[%s] MockEdgeClient initialized", self._device_id)
-        return True
-    
-    def start(self, blocking: bool = False) -> bool:
-        self._is_running = True
-        return True
-    
-    def stop(self, timeout: float = 5.0) -> None:
-        self._is_running = False
-        if self._cap:
-            self._cap.release()
-    
-    def update_model(self, new_onnx_path: str, new_version: int) -> bool:
-        self._model_version = new_version
-        logger.info("[%s] Model updated to v%d", self._device_id, new_version)
-        return True
-    
-    def replace_training_buffer(self, new_buffer) -> None:
-        self._training_buffer = new_buffer
-    
-    def simulate_frame(self) -> None:
-        """Read next video frame and generate simulated analytics."""
-        with self._lock:
-            ret, frame = self._cap.read()
-
-        # Loop video when finished
-        if not ret:
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = self._cap.read()
-            if not ret:
-                return
-
-        self._frame_idx += 1
-
-        h, w, _ = frame.shape
-        num_persons = np.random.randint(5, 50)
-
-        self._latest_result = MockFrameResult(
-            frame_idx=self._frame_idx,
-            timestamp_ms=time.time() * 1000,
-            centers=[
-                (np.random.randint(0, w), np.random.randint(0, h))
-                for _ in range(num_persons)
-            ],
-            num_persons=num_persons,
-            graph=None,
-            anomaly_score=np.random.random() * 0.6,
-            metrics={
-                "density": min(num_persons / 50.0, 1.0),
-                "avg_velocity": np.random.random() * 2.0,
-                "flow_magnitude": np.random.random() * 5.0,
-            },
-            alert_state=np.random.choice(
-                ["NORMAL", "UNSTABLE", "STAMPEDE"],
-                p=[0.7, 0.2, 0.1],
-            ),
-            model_version=self._model_version,
-            processing_time_ms=np.random.random() * 40,
-        )
-
-    
-    def get_latest_result(self) -> Optional[MockFrameResult]:
-        with self._lock:
-            return self._latest_result
-    
-    def get_stats(self) -> Dict[str, Any]:
-        with self._lock:
-            elapsed = time.time() - self._start_time if self._start_time else 0
-            return {
-                "device_id": self._device_id,
-                "is_running": self._is_running,
-                "frame_count": self._frame_idx,
-                "elapsed_sec": elapsed,
-                "fps": self._frame_idx / elapsed if elapsed > 0 else 0,
-                "model_version": self._model_version,
-                "training_buffer": self._training_buffer.get_stats(),
-            }
 
 
 # ============================================================
@@ -311,30 +127,30 @@ class FederatedSimulation:
         self._dashboard_thread: Optional[threading.Thread] = None
     
     def setup(self) -> None:
-        """Initialize all components."""
-        logger.info("Setting up federated simulation...")
+        """Initialize all components with REAL edge pipeline."""
+        logger.info("Setting up federated simulation (REAL edge pipeline)...")
         
         # 1. Create server
         self.server = FederatedServer(self.server_config)
         
-        # 2. Create clients with mock edge devices
+        # 2. Create clients with REAL EdgeClients
+        video_path = str(
+            Path(__file__).parent.parent / "data" / "videos" / "mat_dataset_full.mp4"
+        )
+        base_dir = str(_project_root)
+        
         for i in range(self.num_clients):
             device_id = f"edge_{i:02d}"
             
-            # Create mock edge client
-            video_path = (
-                Path(__file__).parent.parent
-                / "data"
-                / "videos"
-                / "mat_dataset_full.mp4"
-            )
-
-            mock_edge = MockEdgeClient(
+            # Create real EdgeConfig via factory
+            edge_config = create_simulation_config(
+                video_source=video_path,
+                base_dir=base_dir,
                 device_id=device_id,
-                video_path=video_path,
-                num_samples=self.samples_per_client,
             )
-            mock_edge.initialize()
+            
+            # Create REAL EdgeClient (YOLO + GraphBuilder + ONNX + Alert)
+            real_edge = EdgeClient(edge_config)
             
             # Create transport
             transport = LocalTransport(self.server)
@@ -358,13 +174,14 @@ class FederatedSimulation:
             
             # Create federated client
             client = FederatedClient(
-                edge_client=mock_edge,
+                edge_client=real_edge,
                 transport=transport,
                 trainer=trainer,
                 config=client_config,
             )
             
             self.clients[device_id] = client
+            logger.info("[%s] Real EdgeClient created", device_id)
         
         # 3. Create dashboard adapter
         self.adapter = DashboardAdapter(
@@ -376,7 +193,7 @@ class FederatedSimulation:
         dashboard_main.set_adapter(self.adapter)
         
         logger.info(
-            "Simulation setup complete: %d clients",
+            "Simulation setup complete: %d real edge clients",
             len(self.clients),
         )
     
@@ -392,7 +209,12 @@ class FederatedSimulation:
     
     def run_simulation(self, num_rounds: int = 3) -> None:
         """
-        Run federated learning simulation.
+        Run federated learning simulation with real edge pipeline.
+        
+        EdgeClient.start() launches background threads that process
+        video → YOLO → Graph → STGNN → Alert → TrainingBuffer.
+        We then wait for enough training samples to accumulate
+        before triggering training cycles.
         
         Args:
             num_rounds: Number of federated rounds to run.
@@ -400,49 +222,71 @@ class FederatedSimulation:
         logger.info("Starting simulation (%d rounds)...", num_rounds)
         
         try:
-            # Register all clients
+            # Start all clients (this initializes + registers + starts edge processing)
             for device_id, client in self.clients.items():
-                client.start()
-                # Simulate initial registration
-                client._register()
-                logger.info("[%s] Registered", device_id)
+                success = client.start(blocking=False)
+                if success:
+                    logger.info("[%s] Started (real pipeline running)", device_id)
+                else:
+                    logger.error("[%s] Failed to start!", device_id)
             
             # Run rounds
             for round_num in range(num_rounds):
                 logger.info("=" * 50)
-                logger.info("ROUND %d", round_num + 1)
+                logger.info("ROUND %d / %d", round_num + 1, num_rounds)
                 logger.info("=" * 50)
                 
-                # Simulate frames for each client
-                for device_id, client in self.clients.items():
-                    mock_edge = client._edge_client
-                    for _ in range(10):
-                        mock_edge.simulate_frame()
+                # Wait for real training samples to accumulate
+                # EdgeClient processes video frames in background and populates TrainingBuffer
+                min_samples = 16
+                max_wait = 60  # seconds
+                logger.info("Waiting for training samples to accumulate (min=%d)...", min_samples)
+                
+                wait_start = time.time()
+                while time.time() - wait_start < max_wait:
+                    all_ready = True
+                    for device_id, client in self.clients.items():
+                        buf = client._edge_client.training_buffer
+                        sample_count = len(buf) if buf else 0
+                        if sample_count < min_samples:
+                            all_ready = False
                     
-                    # Refill training buffer if needed
-                    if len(mock_edge.training_buffer) < 32:
-                        mock_edge.replace_training_buffer(
-                            MockTrainingBuffer(self.samples_per_client)
-                        )
+                    if all_ready:
+                        break
+                    time.sleep(2.0)
+                
+                # Log buffer status
+                for device_id, client in self.clients.items():
+                    buf = client._edge_client.training_buffer
+                    count = len(buf) if buf else 0
+                    edge_stats = client._edge_client.get_stats()
+                    logger.info(
+                        "[%s] frames=%d, buffer=%d samples",
+                        device_id,
+                        edge_stats.get("frame_count", 0),
+                        count,
+                    )
+                
+                # Sync models before training
+                for device_id, client in self.clients.items():
+                    client._poll_for_model()
                 
                 # Training cycle for each client
                 for device_id, client in self.clients.items():
                     client._training_cycle()
+                    stats = client.get_stats()
                     logger.info(
-                        "[%s] Training complete, samples=%d",
+                        "[%s] Training complete, total_samples_trained=%d",
                         device_id,
-                        client.get_stats()["samples_trained"],
+                        stats.get("samples_trained", 0),
                     )
                 
                 # Wait for aggregation
                 time.sleep(1.0)
                 
-                # Poll for new models
+                # Poll for new aggregated model
                 for device_id, client in self.clients.items():
                     client._poll_for_model()
-                
-                # Small delay between rounds
-                time.sleep(0.5)
                 
                 # Log server stats
                 server_stats = self.server.get_stats()
@@ -452,6 +296,9 @@ class FederatedSimulation:
                     server_stats["round_id"],
                     server_stats["round_status"],
                 )
+                
+                # Small delay between rounds
+                time.sleep(0.5)
             
             logger.info("=" * 50)
             logger.info("SIMULATION COMPLETE")

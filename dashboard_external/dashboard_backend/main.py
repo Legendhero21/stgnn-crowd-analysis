@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .adapter import DashboardAdapter
 from .schemas import (
@@ -432,6 +432,60 @@ def get_snapshot():
             status_code=503,
             content={"error": str(exc)},
         )
+
+
+# ============================================================
+# VIDEO STREAMING ENDPOINT
+# ============================================================
+
+@app.get("/video/{device_id}")
+def stream_video(device_id: str):
+    """
+    MJPEG video stream from an edge device.
+    
+    Reads the latest processed frame from EdgeClient and
+    serves it as a multipart JPEG stream.
+    
+    Usage:
+        <img src="http://127.0.0.1:8000/video/edge_00" />
+    
+    Args:
+        device_id: Edge device identifier.
+    """
+    import cv2
+    import time as _time
+    
+    try:
+        adapter = get_adapter()
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"error": str(exc)},
+        )
+    
+    edge = adapter.get_edge_client(device_id)
+    if edge is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Device not found: {device_id}"},
+        )
+    
+    def frame_generator():
+        while True:
+            frame = edge.get_latest_frame()
+            if frame is not None:
+                _, buffer = cv2.imencode(".jpg", frame)
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" +
+                    buffer.tobytes() + b"\r\n"
+                )
+            _time.sleep(0.033)  # ~30 fps
+    
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 # ============================================================

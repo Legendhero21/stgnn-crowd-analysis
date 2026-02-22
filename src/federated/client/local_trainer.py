@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Type
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -165,6 +166,30 @@ class LocalTrainer:
         model.to(self._device)
         return model
     
+    def _prepare_batch(self, batch):
+        """
+        Convert a batch from iter_batches into (x_seq, edge_index, target) tensors.
+        
+        Supports two formats:
+        - Real TrainingBuffer: yields List[TrainingSample] with numpy arrays
+        - Mock buffer (tests): yields (x_seq, edge_index, target) torch tuples
+        """
+        if isinstance(batch, (list,)) and len(batch) > 0 and hasattr(batch[0], 'x_seq'):
+            # Real TrainingBuffer: List[TrainingSample]
+            x_seqs = torch.from_numpy(
+                np.concatenate([s.x_seq for s in batch], axis=0)
+            ).float()
+            edge_index = torch.from_numpy(batch[0].edge_index).long()
+            targets = torch.from_numpy(
+                np.stack([s.target for s in batch], axis=0)
+            ).float()
+            return x_seqs, edge_index, targets
+        elif isinstance(batch, (tuple, list)) and len(batch) == 3:
+            # Mock/test buffer: (x_seq_tensor, edge_index_tensor, target_tensor)
+            return batch[0], batch[1], batch[2]
+        else:
+            raise TypeError(f"Unexpected batch format: {type(batch)}")
+    
     def train(
         self,
         training_buffer: Any,
@@ -221,7 +246,7 @@ class LocalTrainer:
                 
                 # Iterate over batches
                 for batch in training_buffer.iter_batches(batch_size):
-                    x_seq, edge_index, target = batch
+                    x_seq, edge_index, target = self._prepare_batch(batch)
                     
                     # Move to device
                     x_seq = x_seq.to(self._device)

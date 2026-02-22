@@ -156,6 +156,7 @@ class EdgeClient:
         
         # Results
         self._latest_result: Optional[FrameResult] = None
+        self._latest_frame: Optional[np.ndarray] = None  # raw BGR for streaming
         self._frame_count = 0
         self._start_time: Optional[float] = None
         
@@ -450,9 +451,12 @@ class EdgeClient:
         # 7. Alert logic
         alert_state = self._alert_logic.update(anomaly_score, metrics)
         
-        # 8. Video writing
+        # 8. Draw visualization overlay (always, for streaming)
+        vis_frame = self._draw_visualization(frame, centers, graph, anomaly_score, alert_state)
+        self._latest_frame = vis_frame
+        
+        # Video writing (optional)
         if self._video_writer is not None:
-            vis_frame = self._draw_visualization(frame, centers, graph, anomaly_score, alert_state)
             self._video_writer.write(vis_frame)
         
         processing_time_ms = (time.time() - start_time) * 1000
@@ -651,6 +655,16 @@ class EdgeClient:
         with self._lock:
             return self._latest_result
     
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        """Get the most recent raw video frame (BGR) for streaming."""
+        with self._lock:
+            return self._latest_frame
+    
+    def get_latest_result(self) -> Optional[FrameResult]:
+        """Get the most recent processing result for dashboard metrics."""
+        with self._lock:
+            return self._latest_result
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get client statistics."""
         with self._lock:
@@ -684,3 +698,16 @@ class EdgeClient:
             return False
         
         return self._onnx_swapper.hot_swap(new_onnx_path, new_version)
+    
+    def update_onnx_model(self, new_model_path: str, new_version: int) -> bool:
+        """
+        Alias for update_model (used by FederatedClient._apply_aggregated_model).
+        
+        Args:
+            new_model_path: Path to new ONNX model.
+            new_version: New version number.
+        
+        Returns:
+            True if swap succeeded.
+        """
+        return self.update_model(new_model_path, new_version)

@@ -42,10 +42,12 @@ class ClientState(str, Enum):
     Matches: src/federated/client/federated_client.py ClientState
     """
     IDLE = "IDLE"
+    REGISTERING = "REGISTERING"
     COLLECTING = "COLLECTING"
     TRAINING = "TRAINING"
     SUBMITTING = "SUBMITTING"
     WAITING_MODEL = "WAITING_MODEL"
+    STOPPED = "STOPPED"
 
 
 class RoundStatus(str, Enum):

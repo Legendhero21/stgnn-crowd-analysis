@@ -14,7 +14,7 @@ __pycache__/
 *.log
 
 # Outputs
-
+outputs/federated/models/
 src/checkpoints/
 logs/
 runs/
