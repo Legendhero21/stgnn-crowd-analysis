@@ -1,82 +1,116 @@
+"""
+Temporal Graph Buffer with Padding & Masking
+---------------------------------------------
+Maintains a fixed-length window of consecutive graph snapshots.
+
+Key design (Wu et al., 2020; Seo et al., 2018):
+- All graphs are padded to MAX_NODES so that the tensor shape is
+  constant across frames regardless of how many people are detected.
+- A binary mask tracks which nodes are real vs. padded.
+- The buffer NEVER resets when node count changes between frames.
+"""
+
 import numpy as np
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
+
+# Maximum number of nodes per frame. Graphs with fewer nodes are
+# zero-padded; graphs with more nodes are truncated (oldest excess dropped).
+MAX_NODES: int = 50
 
 
 class TemporalGraphBuffer:
     """
-    Maintains a fixed-length window of consecutive graph snapshots and
-    returns a temporal tensor once the buffer is full.
+    Fixed-window temporal buffer that produces [1, T, MAX_NODES, F] tensors.
 
-    Each graph is expected to be a dict with at least key "x" -> np.ndarray
-    of shape (N, F). Node count is assumed stable over the window; if it
-    changes, the buffer is reset.
+    Unlike the previous implementation, this buffer does NOT reset when the
+    number of detected people changes between frames.  Instead, every graph
+    is padded/truncated to MAX_NODES and a binary mask records validity.
     """
 
-    def __init__(self, window_size: int = 5):
+    def __init__(self, window_size: int = 5, max_nodes: int = MAX_NODES) -> None:
         if window_size <= 0:
             raise ValueError(f"window_size must be positive, got {window_size}")
+        if max_nodes <= 0:
+            raise ValueError(f"max_nodes must be positive, got {max_nodes}")
+
         self.window_size: int = int(window_size)
+        self.max_nodes: int = int(max_nodes)
+
+        # Each element: {"x_padded": [MAX_NODES, F], "mask": [MAX_NODES]}
         self.buffer: List[Dict[str, np.ndarray]] = []
-        self._node_count: Optional[int] = None
 
     def reset(self) -> None:
-        """Clear buffer and node-count tracking."""
+        """Clear the buffer (e.g. on scene change or explicit request)."""
         self.buffer.clear()
-        self._node_count = None
 
-    def push(self, graph: Optional[Dict[str, np.ndarray]]) -> Optional[np.ndarray]:
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def push(
+        self, graph: Optional[Dict[str, np.ndarray]]
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        Add a new graph to buffer and return temporal tensor if ready.
+        Add a new graph snapshot and return the temporal tensor when ready.
 
         Args:
-            graph: Dict with key "x" (node features [N, F]) or None.
+            graph: Dict with key ``"x"`` holding node features [N, F],
+                   or ``None`` when no people are detected.
 
         Returns:
-            x_seq: np.ndarray with shape (1, T, N, F) when buffer is full,
-                   otherwise None.
+            (x_seq, mask_seq) where
+                x_seq:    np.ndarray  [1, T, MAX_NODES, F]  or None
+                mask_seq: np.ndarray  [1, T, MAX_NODES]     or None
         """
-        # Missing graph ⇒ break temporal continuity.
+        # No detections → skip this frame entirely (do not push).
         if graph is None:
-            self.reset()
-            return None
+            return None, None
 
         if "x" not in graph:
             raise KeyError("Graph dict must contain key 'x' with node features.")
 
         x = graph["x"]
         if not isinstance(x, np.ndarray):
-            raise TypeError(f"graph['x'] must be a np.ndarray, got {type(x)}")
-
+            raise TypeError(f"graph['x'] must be np.ndarray, got {type(x)}")
         if x.ndim != 2:
-            raise ValueError(f"graph['x'] must be 2D [N, F], got shape {x.shape}")
+            raise ValueError(f"graph['x'] must be 2-D [N, F], got shape {x.shape}")
 
-        n_nodes = x.shape[0]
+        n_nodes, n_feat = x.shape
+        if n_nodes == 0:
+            # Zero detections after filtering — treat like None.
+            return None, None
 
-        # Initialize node count on first valid graph
-        if self._node_count is None:
-            self._node_count = n_nodes
-        # Node count changed ⇒ reset buffer (track new crowd configuration)
-        elif n_nodes != self._node_count:
-            self.reset()
-            self._node_count = n_nodes
+        # --- Pad / truncate to MAX_NODES ---
+        x_padded = np.zeros((self.max_nodes, n_feat), dtype=np.float32)
+        mask = np.zeros(self.max_nodes, dtype=np.float32)
 
-        self.buffer.append(graph)
+        n_valid = min(n_nodes, self.max_nodes)
+        x_padded[:n_valid] = x[:n_valid]
+        mask[:n_valid] = 1.0
+
+        self.buffer.append({"x_padded": x_padded, "mask": mask})
 
         # Trim to window size
         if len(self.buffer) > self.window_size:
             self.buffer.pop(0)
 
-        # Not enough temporal context yet
+        # Not enough frames yet
         if len(self.buffer) < self.window_size:
-            return None
+            return None, None
 
-        # Stack [T, N, F] and add batch dimension → [1, T, N, F]
+        # --- Stack temporal tensor ---
         try:
-            x_seq = np.stack([g["x"] for g in self.buffer], axis=0)
+            x_seq = np.stack(
+                [g["x_padded"] for g in self.buffer], axis=0
+            )  # [T, MAX_NODES, F]
+            mask_seq = np.stack(
+                [g["mask"] for g in self.buffer], axis=0
+            )  # [T, MAX_NODES]
         except Exception as exc:
-            # If shapes don’t align, reset to avoid silent misuse
             self.reset()
-            raise ValueError(f"Failed to stack graphs into temporal tensor: {exc}")
+            raise ValueError(f"Failed to stack temporal tensor: {exc}")
 
+        # Add batch dimension → [1, T, MAX_NODES, F] / [1, T, MAX_NODES]
         x_seq = x_seq[np.newaxis, ...].astype(np.float32, copy=False)
-        return x_seq
+        mask_seq = mask_seq[np.newaxis, ...].astype(np.float32, copy=False)
+
+        return x_seq, mask_seq

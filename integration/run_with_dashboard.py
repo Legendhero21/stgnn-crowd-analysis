@@ -135,7 +135,7 @@ class FederatedSimulation:
         
         # 2. Create clients with REAL EdgeClients
         video_path = str(
-            Path(__file__).parent.parent / "data" / "videos" / "mat_dataset_full.mp4"
+            Path(__file__).parent.parent / "data" / "videos" / "test_crowd.mp4"
         )
         base_dir = str(_project_root)
         

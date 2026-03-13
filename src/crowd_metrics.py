@@ -10,11 +10,23 @@ ArrayLike = Union[np.ndarray]
 
 @dataclass(frozen=True)
 class FeatureIndex:
+    """Column indices for node feature vectors.
+
+    Supports both legacy 5-feature and expanded 8-feature layouts.
+    """
     x: int = 0
     y: int = 1
     dx: int = 2
     dy: int = 3
-    density: int = 4
+    speed: int = 4
+    heading: int = 5
+    density: int = 6
+    bbox_area: int = 7
+
+    # Legacy alias — maps old 'density' at col 4 when only 5 features
+    @staticmethod
+    def legacy() -> "FeatureIndex":
+        return FeatureIndex(density=4)
 
 
 class CrowdMetrics:
@@ -42,6 +54,7 @@ class CrowdMetrics:
 
         Args:
             graph: Mapping with key "x" -> np.ndarray of shape [N, F].
+                   Optionally "mask" -> np.ndarray of shape [N] (1=real, 0=padded).
             feature_index: Optional FeatureIndex to configure column positions.
 
         Returns:
@@ -54,11 +67,25 @@ class CrowdMetrics:
         if x.ndim != 2:
             return CrowdMetrics._empty()
 
+        # Apply mask if present (filter out padded nodes)
+        mask = graph.get("mask")
+        if mask is not None:
+            mask = np.asarray(mask)
+            valid = mask > 0.5
+            x = x[valid]
+
         N, F = x.shape
         if N == 0:
             return CrowdMetrics._empty()
 
-        fi = feature_index or CrowdMetrics.DEFAULT_FEATURE_INDEX
+        # Auto-detect legacy (5-feature) vs expanded (8-feature) layout
+        if feature_index is not None:
+            fi = feature_index
+        elif F <= 5:
+            fi = FeatureIndex.legacy()
+        else:
+            fi = CrowdMetrics.DEFAULT_FEATURE_INDEX
+
         max_idx = max(fi.dx, fi.dy, fi.density)
         if F <= max_idx:
             return CrowdMetrics._empty()
