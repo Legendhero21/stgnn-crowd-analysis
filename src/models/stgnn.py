@@ -4,6 +4,16 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, BatchNorm
 
 
+FEDERATED_EDGE_STGNN_KWARGS = {
+    "in_channels": 8,
+    "hidden_channels": 64,
+    "out_channels": 1,
+    "num_layers": 3,
+    "dropout": 0.1,
+    "kernel_size": 3,
+}
+
+
 class STGCNBlock(nn.Module):
     """Spatial-Temporal Graph Convolutional Block with residual connections."""
     
@@ -116,7 +126,7 @@ class STGNN(nn.Module):
         self, 
         in_channels=5, 
         hidden_channels=64,
-        out_channels=2, 
+        out_channels=1, 
         num_layers=3,
         dropout=0.1,
         kernel_size=3
@@ -170,11 +180,14 @@ class STGNN(nn.Module):
     
     def forward(self, x, edge_index):
         """
+        Forward pass for crowd-level anomaly scoring.
+
         Args:
-            x: [1, T, N, F] - Input features
-            edge_index: [2, E] - Graph edges
+            x: [1, T, N, F] - Temporal node features (padded to MAX_NODES).
+            edge_index: [2, E] - Spatial graph edges.
+
         Returns:
-            out: [1, N, 2] - Predicted (x, y) coordinates
+            out: [1, 1] - Scalar crowd-level anomaly score (mean-pooled).
         """
         # Input validation
         if x.dim() != 4:
@@ -206,7 +219,7 @@ class STGNN(nn.Module):
         out = x[:, -1, :, :]  # [1, N, hidden_channels]
         
         # Output projection
-        out = self.fc_out(out)  # [1, N, 2]
+        out = out.mean(dim=1)  # [1, 1] → crowd-level score
         
         return out
     
@@ -227,7 +240,7 @@ if __name__ == "__main__":
     model = STGNN(
         in_channels=5,
         hidden_channels=64,
-        out_channels=2,
+        out_channels=1,
         num_layers=3,
         dropout=0.1
     )

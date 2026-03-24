@@ -81,7 +81,7 @@ class FederatedClientConfig:
     max_local_epochs: int = 5
     min_samples_for_training: int = 32
     learning_rate: float = 0.001
-    batch_size: int = 16
+    batch_size: int = 1
     model_class: Optional[Type[nn.Module]] = None
     model_kwargs: Dict[str, Any] = field(default_factory=dict)
     device: str = "cpu"
@@ -107,7 +107,7 @@ class FederatedClientConfig:
             max_local_epochs=data.get("max_local_epochs", 5),
             min_samples_for_training=data.get("min_samples_for_training", 32),
             learning_rate=data.get("learning_rate", 0.001),
-            batch_size=data.get("batch_size", 16),
+            batch_size=data.get("batch_size", 1),
             model_class=model_class,
             model_kwargs=data.get("model_kwargs", {}),
             device=data.get("device", "cpu"),
@@ -214,7 +214,11 @@ class FederatedClient:
     # Lifecycle
     # ============================================================
     
-    def start(self, blocking: bool = False) -> bool:
+    def start(
+        self,
+        blocking: bool = False,
+        start_federated_loop: bool = True,
+    ) -> bool:
         """
         Start the federated client.
         
@@ -226,6 +230,8 @@ class FederatedClient:
         
         Args:
             blocking: If True, run federated loop in current thread.
+            start_federated_loop: If False, only start edge processing,
+                registration, and heartbeats. Training must be triggered manually.
         
         Returns:
             True if started successfully.
@@ -248,26 +254,32 @@ class FederatedClient:
             return False
         
         # Sync to latest model
-        self._sync_model()
+        if not self._sync_model():
+            logger.error("Failed to synchronize model during startup")
+            return False
         
         # Start edge client processing
         self._edge_client.start(blocking=False)
+        with self._lock:
+            self._state = FederatedClientState.COLLECTING
         
         # Start federated loop
         self._is_running = True
         self._stop_event.clear()
         
-        if blocking:
+        if start_federated_loop and blocking:
             self._run_federated_loop()
-        else:
+        elif start_federated_loop:
             self._fed_loop_thread = threading.Thread(
                 target=self._run_federated_loop,
                 name=f"FederatedClient-{self.device_id}",
                 daemon=True,
             )
             self._fed_loop_thread.start()
-            
-            # Start heartbeat thread
+
+        if not blocking:
+            # Keep device liveness visible even when training is orchestrated
+            # manually by a higher-level runner.
             self._heartbeat_thread = threading.Thread(
                 target=self._run_heartbeat_loop,
                 name=f"Heartbeat-{self.device_id}",
@@ -324,23 +336,24 @@ class FederatedClient:
         if ack.success:
             with self._lock:
                 self._is_registered = True
-                self._current_model_version = ack.current_global_version
             
             logger.info(
-                "Registered with server: global_version=%d",
+                "Registered with server: global_version=%d, local_version=%d",
                 ack.current_global_version,
+                self._current_model_version,
             )
             return True
         else:
             logger.error("Registration failed: %s", ack.error_message)
             return False
     
-    def _sync_model(self) -> None:
+    def _sync_model(self) -> bool:
         """Sync to the latest global model."""
         current_model = self._transport.get_current_model()
         
         if current_model.version > self._current_model_version:
-            self._apply_aggregated_model(current_model)
+            return self._apply_aggregated_model(current_model)
+        return True
     
     # ============================================================
     # Federated Loop
@@ -417,7 +430,7 @@ class FederatedClient:
         if model is not None and model.version > self._current_model_version:
             self._apply_aggregated_model(model)
     
-    def _apply_aggregated_model(self, model) -> None:
+    def _apply_aggregated_model(self, model) -> bool:
         """
         Apply an aggregated model from server.
         
@@ -431,19 +444,31 @@ class FederatedClient:
             model.version,
         )
         
-        # Hot-swap ONNX if path is available
-        if model.onnx_path and os.path.isfile(model.onnx_path):
+        applied = model.state_dict is None
+
+        # Hot-swap PyTorch weights
+        if model.state_dict is not None:
             try:
-                self._edge_client.update_onnx_model(
-                    new_model_path=model.onnx_path,
+                self._edge_client.update_model_weights(
+                    state_dict=model.state_dict,
                     new_version=model.version,
                 )
-                logger.info("ONNX hot-swap complete: v%d", model.version)
+                logger.info("PyTorch weights hot-swap complete: v%d", model.version)
+                applied = True
             except Exception as exc:
-                logger.error("ONNX hot-swap failed: %s", exc)
+                logger.error("PyTorch weights hot-swap failed: %s", exc)
         
+        if not applied:
+            logger.warning(
+                "Keeping local model at v%d because v%d could not be applied",
+                self._current_model_version,
+                model.version,
+            )
+            return False
+
         with self._lock:
             self._current_model_version = model.version
+        return True
     
     # ============================================================
     # Training Cycle
@@ -471,7 +496,17 @@ class FederatedClient:
         
         # Get current global weights to initialize training
         current_model = self._transport.get_current_model()
+        if current_model.version > self._current_model_version:
+            logger.info(
+                "Syncing to global model v%d before local training",
+                current_model.version,
+            )
+            if not self._apply_aggregated_model(current_model):
+                with self._lock:
+                    self._state = FederatedClientState.COLLECTING
+                return
         initial_weights = current_model.state_dict
+        base_version = current_model.version
         
         # Train locally
         with self._lock:
@@ -501,7 +536,7 @@ class FederatedClient:
             device_id=self.device_id,
             state_dict=result.state_dict,
             num_samples=result.samples_used,
-            base_version=self._current_model_version,
+            base_version=base_version,
         )
         
         if ack.success:
@@ -521,6 +556,7 @@ class FederatedClient:
             training_buffer.clear()
         else:
             logger.warning("Update submission failed: %s", ack.error_message)
+            self._sync_model()
         
         with self._lock:
             self._state = FederatedClientState.COLLECTING

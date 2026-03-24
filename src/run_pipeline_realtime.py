@@ -78,7 +78,7 @@ STGNN_MODEL = os.getenv(
 )
 VIDEO_SOURCE = os.getenv(
     "VIDEO_SOURCE",
-    "D:/stgnn_project/data/videos/test_crowd.mp4",
+    "D:/stgnn_project/data/videos/mat_dataset_full.mp4",
 )
 
 OUTPUT_DIR = os.getenv(
@@ -96,12 +96,11 @@ MAX_VELOCITY = 0.1                # clip velocity in normalized coords
 ENABLE_TEMPORAL_EDGES = False     # disabled — current ONNX not trained with them
 
 # --- Display ---
-ANOMALY_THRESHOLD_WARNING = 0.5
-ANOMALY_THRESHOLD_CRITICAL = 2.0
+ANOMALY_THRESHOLD_WARNING = 10
+ANOMALY_THRESHOLD_CRITICAL = 20
 DISPLAY_GRAPH_EDGES = True
 DISPLAY_FPS = True
 FRAME_DELAY = 1  # ms for cv2.waitKey
-TEMPORAL_WINDOW = 5
 
 # --- Debug ---
 DEBUG_MODE = True  # Enable detailed per-frame console + visual debug
@@ -118,7 +117,7 @@ STGNN_CONFIG = {
     "dropout": 0.1,
     "kernel_size": 3,
 }
-
+TEMPORAL_WINDOW = 5
 
 # ==========================================================
 # VALIDATION
@@ -399,11 +398,7 @@ class STGNNInference:
                 self._model_features,
             )
 
-    def predict_from_sequence(
-        self,
-        x_seq: np.ndarray,
-        edge_index: np.ndarray,
-    ) -> float:
+    def predict_from_sequence(self, x_seq, edge_index, mask_seq):
         """
         Run STGNN inference on a temporal sequence.
 
@@ -456,7 +451,15 @@ class STGNNInference:
             preds = preds[:min_nodes]
             last_x = last_x[:min_nodes]
 
-        mse = float(np.mean((preds[:, :n_feat_used] - last_x) ** 2))
+        mask_last = mask_seq[0, -1]  # [N]
+        valid_nodes = mask_last > 0.5
+        diff = (preds[:, :n_feat_used] - last_x) ** 2
+        diff = diff[valid_nodes]
+
+        if diff.size == 0:
+            return 0.0
+
+        mse = float(np.mean(diff))
         scaled_mse = mse * 1000.0
 
         return scaled_mse
@@ -671,14 +674,13 @@ def main() -> None:
 
             # ----- 4. STGNN INFERENCE -----
             if x_seq is not None and graph is not None:
+                edge_index = graph["edge_index"]
+
                 if DEBUG_MODE:
                     print(f"[STGNN] Running inference  x_seq={x_seq.shape}  "
-                          f"edges={graph['edge_index'].shape}")
+                          f"edges={edge_index.shape}")
 
-                anomaly = stgnn.predict_from_sequence(
-                    x_seq,
-                    graph["edge_index"],
-                )
+                anomaly = stgnn.predict_from_sequence(x_seq, edge_index, mask_seq)
 
                 if DEBUG_MODE:
                     print(f"[STGNN] Anomaly score: {anomaly:.5f}")

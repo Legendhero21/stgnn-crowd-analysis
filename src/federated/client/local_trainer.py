@@ -46,7 +46,6 @@ from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
-
 # Type alias for state dict
 StateDict = Dict[str, Tensor]
 
@@ -88,7 +87,7 @@ class TrainingConfig:
         loss_fn_name: Name of loss function (mse, l1, smooth_l1).
     """
     max_epochs: int = 5
-    batch_size: int = 16
+    batch_size: int = 1
     learning_rate: float = 0.001
     min_samples: int = 32
     device: str = "cpu"
@@ -179,23 +178,56 @@ class LocalTrainer:
             x_seqs = torch.from_numpy(
                 np.concatenate([s.x_seq for s in batch], axis=0)
             ).float()
+            mask_seqs = torch.from_numpy(
+                np.concatenate([s.mask_seq for s in batch], axis=0)
+            ).float()
             edge_index = torch.from_numpy(batch[0].edge_index).long()
             targets = torch.from_numpy(
                 np.stack([s.target for s in batch], axis=0)
             ).float()
-            return x_seqs, edge_index, targets
+            return x_seqs, mask_seqs, edge_index, targets
         elif isinstance(batch, (tuple, list)) and len(batch) == 3:
-            # Mock/test buffer: (x_seq_tensor, edge_index_tensor, target_tensor)
-            return batch[0], batch[1], batch[2]
+            # Legacy/mock buffer: (x_seq_tensor, edge_index_tensor, target_tensor)
+            x_seq = torch.as_tensor(batch[0]).float()
+            edge_index = torch.as_tensor(batch[1]).long()
+            target = torch.as_tensor(batch[2]).float()
+            mask_seq = torch.ones(
+                x_seq.shape[:3],
+                dtype=x_seq.dtype,
+                device=x_seq.device,
+            )
+            return x_seq, mask_seq, edge_index, target
+        elif isinstance(batch, (tuple, list)) and len(batch) == 4:
+            # Mock/test buffer: (x_seq_tensor, mask_seq_tensor, edge_index_tensor, target_tensor)
+            return (
+                torch.as_tensor(batch[0]).float(),
+                torch.as_tensor(batch[1]).float(),
+                torch.as_tensor(batch[2]).long(),
+                torch.as_tensor(batch[3]).float(),
+            )
         else:
             raise TypeError(f"Unexpected batch format: {type(batch)}")
+
+    def _iter_snapshot_batches(
+        self,
+        samples: List[Any],
+        batch_size: int,
+        shuffle: bool = True,
+    ):
+        """Yield batches from a fixed in-memory snapshot."""
+        epoch_samples = list(samples)
+        if shuffle:
+            np.random.shuffle(epoch_samples)
+
+        for i in range(0, len(epoch_samples), batch_size):
+            yield epoch_samples[i:i + batch_size]
     
     def train(
         self,
         training_buffer: Any,
         initial_state_dict: Optional[StateDict] = None,
         max_epochs: int = 5,
-        batch_size: int = 16,
+        batch_size: int = 1,
         min_samples: int = 32,
     ) -> TrainingResult:
         """
@@ -221,7 +253,8 @@ class LocalTrainer:
                 success=False,
                 error_message=f"Not enough samples: {sample_count} < {min_samples}",
             )
-        
+
+
         try:
             # Create model and load initial weights
             model = self._create_model()
@@ -239,35 +272,58 @@ class LocalTrainer:
             # Training loop
             total_samples = 0
             final_loss = float("inf")
+            samples_snapshot = None
+            if hasattr(training_buffer, "get_all"):
+                samples_snapshot = training_buffer.get_all()
+                MAX_SAMPLES = 128
+                samples_snapshot = samples_snapshot[-MAX_SAMPLES:]
+            # FedAvg should be weighted by training examples, not by
+            # padded nodes or by epoch count.
+            examples_used = len(samples_snapshot) if samples_snapshot is not None else sample_count
             
             for epoch in range(max_epochs):
                 epoch_loss = 0.0
                 epoch_samples = 0
                 
                 # Iterate over batches
-                for batch in training_buffer.iter_batches(batch_size):
-                    x_seq, edge_index, target = self._prepare_batch(batch)
+                if samples_snapshot is not None:
+                    batch_iter = self._iter_snapshot_batches(
+                        samples_snapshot,
+                        batch_size=batch_size,
+                    )
+                else:
+                    batch_iter = training_buffer.iter_batches(batch_size)
+
+                for batch in batch_iter:
+                    x_seq, mask_seq, edge_index, target = self._prepare_batch(batch)
                     
                     # Move to device
                     x_seq = x_seq.to(self._device)
+                    mask_seq = mask_seq.to(self._device)
                     edge_index = edge_index.to(self._device)
                     target = target.to(self._device)
                     
                     # Forward pass
                     optimizer.zero_grad()
-                    prediction = model(x_seq, edge_index)
                     
-                    # Compute loss
+                    
+                    # Compute masked loss
+                    prediction = model(x_seq, edge_index)  # [1,1]
+                    target = target.mean().unsqueeze(0).unsqueeze(0)
+
                     loss = self._loss_fn(prediction, target)
                     
                     # Backward pass
+                    
                     loss.backward()
+                    # Prevent gradient explosion (federated stability)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     
                     # Accumulate statistics
-                    batch_samples = x_seq.size(0) *  x_seq.size(2)
-                    epoch_loss += loss.item() * batch_samples
-                    epoch_samples += batch_samples
+                    
+                    epoch_loss += loss.item() 
+                    epoch_samples += 1
                 
                 if epoch_samples > 0:
                     epoch_loss /= epoch_samples
@@ -294,7 +350,7 @@ class LocalTrainer:
             
             return TrainingResult(
                 state_dict=updated_state_dict,
-                samples_used=total_samples,
+                samples_used=examples_used,
                 epochs_completed=max_epochs,
                 final_loss=final_loss,
                 training_time_sec=training_time,
@@ -317,9 +373,12 @@ class LocalTrainer:
         """
         Validate model on held-out data.
         
+        The model produces a scalar crowd-level anomaly score [1, 1].
+        We compare this to the mean of the target for each sample.
+        
         Args:
             state_dict: Model weights to validate.
-            validation_data: List of (x_seq, edge_index, target) tuples.
+            validation_data: List of (x_seq, mask_seq, edge_index, target) tuples.
         
         Returns:
             Average validation loss.
@@ -332,16 +391,21 @@ class LocalTrainer:
         total_samples = 0
         
         with torch.no_grad():
-            for x_seq, edge_index, target in validation_data:
+            for x_seq, mask_seq, edge_index, target in validation_data:
                 x_seq = x_seq.to(self._device)
                 edge_index = edge_index.to(self._device)
                 target = target.to(self._device)
                 
+                # Model output: [1, 1] scalar anomaly score
                 prediction = model(x_seq, edge_index)
-                loss = self._loss_fn(prediction, target)
                 
-                batch_size = x_seq.size(0)
-                total_loss += loss.item() * batch_size
-                total_samples += batch_size
+                # Target is [N, 1] instability; reduce to scalar
+                target_scalar = target.mean().unsqueeze(0).unsqueeze(0)
+                
+                loss = self._loss_fn(prediction, target_scalar)
+                
+                total_loss += loss.item()
+                total_samples += 1
         
         return total_loss / total_samples if total_samples > 0 else float("inf")
+

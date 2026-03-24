@@ -333,7 +333,7 @@ class DashboardAdapter:
             model_data = stats.get("model_info", {})
             model_info = ModelInfo(
                 param_count=model_data.get("param_count", 0),
-                onnx_path=model_data.get("onnx_path"),
+                onnx_path="",
             )
             
             return ServerStatus(

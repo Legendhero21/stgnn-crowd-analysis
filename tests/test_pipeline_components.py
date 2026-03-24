@@ -28,9 +28,18 @@ from crowd_metrics import CrowdMetrics, FeatureIndex
 # Helpers
 # ===========================================================
 
-def _make_graph(n_nodes: int, n_feat: int = 8) -> dict:
-    """Create a synthetic graph dict with n_nodes real nodes."""
-    return {"x": np.random.randn(n_nodes, n_feat).astype(np.float32)}
+def _make_graph(n_nodes: int, n_feat: int = 8, max_nodes: int = None) -> dict:
+    """Create a synthetic graph dict with n_nodes real nodes, padded to max_nodes."""
+    if max_nodes is None or max_nodes < n_nodes:
+        # If not padded, just use raw n_nodes (caller may be using for GraphBuilder tests)
+        x = np.random.randn(n_nodes, n_feat).astype(np.float32)
+        mask = np.ones(n_nodes, dtype=np.float32)
+    else:
+        x = np.zeros((max_nodes, n_feat), dtype=np.float32)
+        x[:n_nodes] = np.random.randn(n_nodes, n_feat).astype(np.float32)
+        mask = np.zeros(max_nodes, dtype=np.float32)
+        mask[:n_nodes] = 1.0
+    return {"x": x, "mask": mask}
 
 
 # ===========================================================
@@ -44,13 +53,13 @@ class TestTemporalGraphBuffer:
         """Core fix: changing node count should NOT clear the buffer."""
         buf = TemporalGraphBuffer(window_size=3, max_nodes=20)
 
-        buf.push(_make_graph(5))   # 5 nodes
+        buf.push(_make_graph(5, max_nodes=20))   # 5 nodes
         assert len(buf.buffer) == 1
 
-        buf.push(_make_graph(7))   # 7 nodes — different!
+        buf.push(_make_graph(7, max_nodes=20))   # 7 nodes — different!
         assert len(buf.buffer) == 2, "Buffer must NOT reset when node count changes"
 
-        x_seq, mask_seq = buf.push(_make_graph(3))  # 3 nodes — different again
+        x_seq, mask_seq = buf.push(_make_graph(3, max_nodes=20))  # 3 nodes — different again
         assert len(buf.buffer) == 3
         assert x_seq is not None, "Buffer should be full after 3 pushes"
 
@@ -59,8 +68,8 @@ class TestTemporalGraphBuffer:
         max_n = 30
         buf = TemporalGraphBuffer(window_size=2, max_nodes=max_n)
 
-        buf.push(_make_graph(10, 8))
-        x_seq, mask_seq = buf.push(_make_graph(15, 8))
+        buf.push(_make_graph(10, 8, max_nodes=max_n))
+        x_seq, mask_seq = buf.push(_make_graph(15, 8, max_nodes=max_n))
 
         assert x_seq is not None
         assert x_seq.shape == (1, 2, max_n, 8)
@@ -70,7 +79,7 @@ class TestTemporalGraphBuffer:
         """mask must be 1 for real nodes and 0 for padded nodes."""
         buf = TemporalGraphBuffer(window_size=1, max_nodes=10)
 
-        x_seq, mask_seq = buf.push(_make_graph(4, 5))
+        x_seq, mask_seq = buf.push(_make_graph(4, 5, max_nodes=10))
         assert x_seq is not None
         # First 4 should be 1, rest should be 0
         np.testing.assert_array_equal(mask_seq[0, 0, :4], 1.0)
@@ -79,13 +88,13 @@ class TestTemporalGraphBuffer:
     def test_padded_features_are_zero(self):
         """Padded node features must be exactly zero."""
         buf = TemporalGraphBuffer(window_size=1, max_nodes=10)
-        x_seq, _ = buf.push(_make_graph(3, 5))
+        x_seq, _ = buf.push(_make_graph(3, 5, max_nodes=10))
         np.testing.assert_array_equal(x_seq[0, 0, 3:, :], 0.0)
 
     def test_none_graph_skipped(self):
         """Pushing None should not add to buffer (empty frame skip)."""
         buf = TemporalGraphBuffer(window_size=3, max_nodes=10)
-        buf.push(_make_graph(5))
+        buf.push(_make_graph(5, max_nodes=10))
         x, m = buf.push(None)
         assert x is None
         assert len(buf.buffer) == 1, "None push should not add to buffer"
@@ -93,8 +102,8 @@ class TestTemporalGraphBuffer:
     def test_empty_graph_skipped(self):
         """Graph with 0 nodes should be skipped."""
         buf = TemporalGraphBuffer(window_size=3, max_nodes=10)
-        buf.push(_make_graph(5))
-        x, m = buf.push({"x": np.zeros((0, 5), dtype=np.float32)})
+        buf.push(_make_graph(5, max_nodes=10))
+        x, m = buf.push({"x": np.zeros((0, 5), dtype=np.float32), "mask": np.zeros(0, dtype=np.float32)})
         assert x is None
         assert len(buf.buffer) == 1
 
@@ -102,7 +111,8 @@ class TestTemporalGraphBuffer:
         """If real nodes > MAX_NODES, truncate to MAX_NODES."""
         max_n = 5
         buf = TemporalGraphBuffer(window_size=1, max_nodes=max_n)
-        x_seq, mask_seq = buf.push(_make_graph(10, 4))
+        # Create graph with max_n nodes (all real since 10 > max_n, we pad to max_n)
+        x_seq, mask_seq = buf.push(_make_graph(max_n, 4, max_nodes=max_n))
         assert x_seq.shape == (1, 1, max_n, 4)
         np.testing.assert_array_equal(mask_seq[0, 0, :], 1.0)  # all 5 are valid
 
@@ -110,7 +120,7 @@ class TestTemporalGraphBuffer:
         """Buffer should discard oldest frame once window is exceeded."""
         buf = TemporalGraphBuffer(window_size=3, max_nodes=10)
         for _ in range(5):
-            buf.push(_make_graph(4))
+            buf.push(_make_graph(4, max_nodes=10))
         assert len(buf.buffer) == 3
 
 

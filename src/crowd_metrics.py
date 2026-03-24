@@ -71,8 +71,16 @@ class CrowdMetrics:
         mask = graph.get("mask")
         if mask is not None:
             mask = np.asarray(mask)
+
+            # Align mask with x
+            if mask.shape[0] != x.shape[0]:
+                mask = mask[:x.shape[0]]
+
             valid = mask > 0.5
-            x = x[valid]
+
+            # Safety check
+            if valid.shape[0] == x.shape[0]:
+                x = x[valid]
 
         N, F = x.shape
         if N == 0:
@@ -147,20 +155,22 @@ class CrowdMetrics:
 
         angles = np.arctan2(dy, dx)
 
-        # If all angles are identical, histogram will be very peaked
+        # Compute histogram as counts (probability mass function)
         hist, _ = np.histogram(
             angles,
             bins=bins,
             range=(-np.pi, np.pi),
-            density=True,
+            density=False,
         )
 
         # Guard against empty or all-zero histograms
         if hist.size == 0 or not np.any(hist):
             return 0.0
 
-        hist = hist + 1e-6  # avoid log(0)
-        entropy = -np.sum(hist * np.log(hist))
+        # Convert to probability mass function (sums to 1.0)
+        probs = hist.astype(np.float64) / hist.sum()
+        probs = probs[probs > 0]  # filter zeros before log
+        entropy = -np.sum(probs * np.log(probs))
         return float(entropy)
 
     @staticmethod

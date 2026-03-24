@@ -10,7 +10,7 @@ Logic mirrors the original RealtimeGraphBuilder from run_pipeline_realtime.py.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -18,117 +18,142 @@ from scipy.spatial.distance import cdist
 
 logger = logging.getLogger(__name__)
 
+# Constants
+MAX_NODES: int = 100
+MAX_VELOCITY = 0.1
 
 class GraphBuilder:
     """
-    Build spatial graphs from person detections.
-    
-    Creates node features [x, y, dx, dy, density] and edges based on
-    proximity radius in normalized coordinates.
-    
-    This is a direct adaptation of RealtimeGraphBuilder from run_pipeline_realtime.py.
+    Build a padded kNN graph from tracked persons.
+    Matches RealtimeGraphBuilder implementation.
     """
     
-    def __init__(self, radius: float, min_nodes: int = 2) -> None:
-        """
-        Initialize graph builder.
-        
-        Args:
-            radius: Radius for spatial edges in normalized [0,1] coordinates.
-            min_nodes: Minimum nodes required to build a valid graph.
-        """
-        self.radius = float(radius)
+    def __init__(self, radius: float = 0.05, min_nodes: int = 2, max_nodes: int = MAX_NODES) -> None:
+        self.k = 5 # default neighbor count
         self.min_nodes = min_nodes
-        self.prev_coords: Optional[np.ndarray] = None
+        self.max_nodes = int(max_nodes)
     
     def build_graph(
         self,
-        detections: List[Tuple[float, float]],
+        tracked_persons: List[Any],
         frame_shape: Tuple[int, int],
+        prev_positions: Dict[int, Tuple[float, float]] = None,
     ) -> Optional[Dict[str, np.ndarray]]:
-        """
-        Build a spatial graph from detection centers.
-        
-        Args:
-            detections: List of (x, y) in pixel coordinates.
-            frame_shape: (H, W).
-        
-        Returns:
-            Dict with 'x' (node features [N, 5]) and 'edge_index' [2, E],
-            or None if too few nodes.
-        """
-        if not detections or len(detections) < self.min_nodes:
-            self.prev_coords = None
+        if not tracked_persons or len(tracked_persons) < self.min_nodes:
             return None
+            
+        if prev_positions is None:
+            prev_positions = {}
         
         h, w = frame_shape
         if h <= 0 or w <= 0:
-            self.prev_coords = None
             return None
         
-        coords = np.asarray(detections, dtype=np.float32).copy()
-        if coords.ndim != 2 or coords.shape[1] != 2:
-            self.prev_coords = None
-            return None
+        n_actual = min(len(tracked_persons), self.max_nodes)
+        persons = tracked_persons[:n_actual]
         
-        # Normalize to [0, 1]
-        coords[:, 0] /= float(w)
-        coords[:, 1] /= float(h)
+        coords = np.zeros((n_actual, 2), dtype=np.float32)
+        bbox_areas = np.zeros(n_actual, dtype=np.float32)
+        track_ids = np.zeros(n_actual, dtype=np.int64)
         
-        # Compute velocity
-        if self.prev_coords is not None and len(self.prev_coords) == len(coords):
-            velocity = coords - self.prev_coords
-        else:
-            velocity = np.zeros_like(coords, dtype=np.float32)
+        for i, p in enumerate(persons):
+            coords[i, 0] = p.cx / float(w)
+            coords[i, 1] = p.cy / float(h)
+            bw = (p.x2 - p.x1) / float(w)
+            bh = (p.y2 - p.y1) / float(h)
+            bbox_areas[i] = bw * bh
+            track_ids[i] = p.track_id
+            
+        velocity = np.zeros((n_actual, 2), dtype=np.float32)
+        for i, p in enumerate(persons):
+            tid = p.track_id
+            if tid in prev_positions:
+                prev_x, prev_y = prev_positions[tid]
+                dx = coords[i, 0] - prev_x
+                dy = coords[i, 1] - prev_y
+                dx = float(np.clip(dx, -MAX_VELOCITY, MAX_VELOCITY))
+                dy = float(np.clip(dy, -MAX_VELOCITY, MAX_VELOCITY))
+                velocity[i, 0] = dx
+                velocity[i, 1] = dy
+                
+        speed = np.sqrt(velocity[:, 0] ** 2 + velocity[:, 1] ** 2)
+        heading = np.arctan2(velocity[:, 1], velocity[:, 0]) / np.pi
         
-        # Build edges
-        edge_index = self._build_edges(coords)
+        edge_index = self._build_knn_edges(coords)
+        local_density = self._compute_density(n_actual, edge_index)
         
-        # Compute density
-        density = self._compute_density(len(coords), edge_index)
-        
-        # Stack features: [x, y, dx, dy, density]
         features = np.hstack([
-            coords,
-            velocity,
-            density[:, None],
+            coords,                 # [N, 2]
+            velocity,               # [N, 2]
+            speed[:, None],         # [N, 1]
+            heading[:, None],       # [N, 1]
+            local_density[:, None], # [N, 1]
+            bbox_areas[:, None],    # [N, 1]
         ]).astype(np.float32)
         
-        self.prev_coords = coords.copy()
+        n_feat = features.shape[1]
+        x_padded = np.zeros((self.max_nodes, n_feat), dtype=np.float32)
+        mask = np.zeros(self.max_nodes, dtype=np.float32)
         
-        return {"x": features, "edge_index": edge_index}
-    
-    def _build_edges(self, coords: np.ndarray) -> np.ndarray:
-        """Build edges based on radius proximity."""
-        if coords.size == 0:
+        x_padded[:n_actual] = features
+        mask[:n_actual] = 1.0
+        
+        return {
+            "x": x_padded,
+            "mask": mask,
+            "edge_index": edge_index,
+            "track_ids": track_ids,
+        }
+        
+    def _build_knn_edges(self, coords: np.ndarray) -> np.ndarray:
+        n = coords.shape[0]
+        if n < 2:
             return np.zeros((2, 0), dtype=np.int64)
-        
+            
+        k_eff = min(self.k, n - 1)
         dists = cdist(coords, coords)
-        row, col = np.where((dists < self.radius) & (dists > 0.0))
+        np.fill_diagonal(dists, np.inf)
         
-        if row.size == 0:
+        rows, cols = [], []
+        for i in range(n):
+            neighbors = np.argpartition(dists[i], k_eff)[:k_eff]
+            for j in neighbors:
+                rows.append(i)
+                cols.append(j)
+                
+        if not rows:
             return np.zeros((2, 0), dtype=np.int64)
+            
+        rows_sym = rows + cols
+        cols_sym = cols + rows
+        edge_index = np.stack([rows_sym, cols_sym], axis=0).astype(np.int64)
         
-        return np.stack([row, col], axis=0).astype(np.int64)
-    
+        edge_set = set()
+        unique_rows, unique_cols = [], []
+        for r, c in zip(edge_index[0], edge_index[1]):
+            if (r, c) not in edge_set:
+                edge_set.add((r, c))
+                unique_rows.append(r)
+                unique_cols.append(c)
+                
+        if not unique_rows:
+            return np.zeros((2, 0), dtype=np.int64)
+        return np.stack([unique_rows, unique_cols], axis=0).astype(np.int64)
+        
     def _compute_density(self, n: int, edge_index: np.ndarray) -> np.ndarray:
-        """Compute normalized node degrees as density."""
         density = np.zeros(n, dtype=np.float32)
-        
         if edge_index.shape[1] > 0:
-            uniq, cnt = np.unique(edge_index[0], return_counts=True)
-            density[uniq] = cnt
-        
-        if n > 1:
-            density /= float(n - 1)
-        
+            for i in range(n):
+                neighbors = edge_index[1, edge_index[0] == i]
+                density[i] = len(np.unique(neighbors))
+        if self.k > 0:
+            density /= float(self.k)
+        density = np.clip(density, 0.0, 1.0)
         return density
-    
+        
     def reset(self) -> None:
-        """Reset velocity tracking."""
-        self.prev_coords = None
+        pass
     
     @property
     def current_node_count(self) -> int:
-        """Number of nodes in the last graph, or 0 if none."""
-        return len(self.prev_coords) if self.prev_coords is not None else 0
+        return 0

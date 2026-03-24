@@ -502,7 +502,6 @@ class TestFederatedServer:
             config = ServerConfig(
                 min_clients=1,
                 model_class=DummySTGNN,
-                onnx_export_dir=tmpdir,
             )
             server = FederatedServer(config)
             
@@ -515,12 +514,8 @@ class TestFederatedServer:
                 base_version=0,
             ))
             
-            # Check ONNX was exported
-            stats = server.get_stats()
-            onnx_path = stats["model_info"]["onnx_path"]
-            
-            assert onnx_path is not None
-            assert os.path.isfile(onnx_path)
+            # Check model version incremented
+            assert server.model_version == 1
     
     def test_model_distribution(self):
         """Test that aggregated model is queued for distribution."""
@@ -654,54 +649,46 @@ class TestFederatedServer:
         Test that callback is invoked ONLY AFTER:
         1. Aggregation completes
         2. Model version increments
-        3. ONNX export succeeds
-        4. Model is queued for distribution
+        3. Model is queued for distribution
         """
         from federated.protocol import RegisterDevice, SubmitUpdate
-        import os
-        import tempfile
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from federated.server import FederatedServer, ServerConfig
-            
-            config = ServerConfig(
-                min_clients=1,
-                model_class=DummySTGNN,
-                onnx_export_dir=tmpdir,
-            )
-            server = FederatedServer(config)
-            server._stop_timeout_watcher()  # Stop for deterministic test
-            
-            callback_data = []
-            
-            def on_aggregation(model):
-                # At callback time, verify all preconditions are met
-                callback_data.append({
-                    "callback_version": model.version,
-                    "server_version": server.model_version,
-                    "onnx_exists": os.path.isfile(model.onnx_path) if model.onnx_path else False,
-                    "has_state_dict": model.state_dict is not None,
-                    "distribution_queued": server.get_aggregated_model("dev-0") is not None,
-                })
-            
-            server.set_aggregation_callback(on_aggregation)
-            server.register_device(RegisterDevice(device_id="dev-0"))
-            
-            server.submit_update(SubmitUpdate(
-                device_id="dev-0",
-                state_dict=create_dummy_state_dict(),
-                num_samples=50,
-                base_version=0,
-            ))
-            
-            # Verify callback was called and all conditions were met
-            assert len(callback_data) == 1
-            data = callback_data[0]
-            assert data["callback_version"] == 1  # Correct version
-            assert data["server_version"] == 1    # Server version incremented
-            assert data["onnx_exists"]            # ONNX exported
-            assert data["has_state_dict"]         # State dict present
-            assert data["distribution_queued"]    # Distribution queued
+        from federated.server import FederatedServer, ServerConfig
+        
+        config = ServerConfig(
+            min_clients=1,
+            model_class=DummySTGNN,
+        )
+        server = FederatedServer(config)
+        server._stop_timeout_watcher()  # Stop for deterministic test
+        
+        callback_data = []
+        
+        def on_aggregation(model):
+            callback_data.append({
+                "callback_version": model.version,
+                "server_version": server.model_version,
+                "has_state_dict": model.state_dict is not None,
+                "distribution_queued": server.get_aggregated_model("dev-0") is not None,
+            })
+        
+        server.set_aggregation_callback(on_aggregation)
+        server.register_device(RegisterDevice(device_id="dev-0"))
+        
+        server.submit_update(SubmitUpdate(
+            device_id="dev-0",
+            state_dict=create_dummy_state_dict(),
+            num_samples=50,
+            base_version=0,
+        ))
+        
+        # Verify callback was called and all conditions were met
+        assert len(callback_data) == 1
+        data = callback_data[0]
+        assert data["callback_version"] == 1
+        assert data["server_version"] == 1
+        assert data["has_state_dict"]
+        assert data["distribution_queued"]
     
     def test_server_shutdown(self):
         """Test server shutdown stops the timeout watcher."""
@@ -731,52 +718,46 @@ class TestEndToEndFederated:
         from federated.protocol import RegisterDevice, SubmitUpdate
         from federated.server import FederatedServer, ServerConfig
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = ServerConfig(
-                min_clients=3,
-                model_class=DummySTGNN,
-                model_kwargs={"in_channels": 5},
-                onnx_export_dir=tmpdir,
-            )
-            server = FederatedServer(config)
-            server._stop_timeout_watcher()  # Stop for deterministic test
+        config = ServerConfig(
+            min_clients=3,
+            model_class=DummySTGNN,
+            model_kwargs={"in_channels": 5},
+        )
+        server = FederatedServer(config)
+        server._stop_timeout_watcher()  # Stop for deterministic test
+        
+        try:
+            # Register 3 devices
+            for i in range(3):
+                ack = server.register_device(RegisterDevice(
+                    device_id=f"device-{i}",
+                    device_type="laptop",
+                ))
+                assert ack.success
             
-            try:
-                # Register 3 devices
-                for i in range(3):
-                    ack = server.register_device(RegisterDevice(
-                        device_id=f"device-{i}",
-                        device_type="laptop",
-                    ))
-                    assert ack.success
+            # Each device submits with different weights
+            for i in range(3):
+                state = create_dummy_state_dict(seed=i * 100)
                 
-                # Each device submits with different weights
-                for i in range(3):
-                    state = create_dummy_state_dict(seed=i * 100)
-                    
-                    ack = server.submit_update(SubmitUpdate(
-                        device_id=f"device-{i}",
-                        state_dict=state,
-                        num_samples=100 + i * 50,  # Different sample counts
-                        base_version=0,
-                    ))
-                    assert ack.success
-                
-                # Verify aggregation occurred
-                assert server.model_version == 1
-                
-                # Verify ONNX exists
-                stats = server.get_stats()
-                assert os.path.isfile(stats["model_info"]["onnx_path"])
-                
-                # Verify all devices got the model queued
-                for i in range(3):
-                    model = server.get_aggregated_model(f"device-{i}")
-                    assert model is not None
-                    assert model.version == 1
-                    assert model.participating_devices == 3
-            finally:
-                server.shutdown()
+                ack = server.submit_update(SubmitUpdate(
+                    device_id=f"device-{i}",
+                    state_dict=state,
+                    num_samples=100 + i * 50,
+                    base_version=0,
+                ))
+                assert ack.success
+            
+            # Verify aggregation occurred
+            assert server.model_version == 1
+            
+            # Verify all devices got the model queued
+            for i in range(3):
+                model = server.get_aggregated_model(f"device-{i}")
+                assert model is not None
+                assert model.version == 1
+                assert model.participating_devices == 3
+        finally:
+            server.shutdown()
 
 
 if __name__ == "__main__":

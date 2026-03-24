@@ -69,10 +69,10 @@ class ServerConfig:
     min_clients: int = 2
     round_timeout_sec: float = 300.0
     stale_device_timeout_sec: float = 120.0
+    enable_timeout_watcher: bool = True
     model_class: type = None  # Must be set
     model_kwargs: Dict[str, Any] = field(default_factory=dict)
     model_init_path: Optional[str] = None
-    onnx_export_dir: str = "outputs/federated/models"
     
     @classmethod
     def from_yaml(cls, yaml_path: str, model_class: type) -> "ServerConfig":
@@ -93,10 +93,10 @@ class ServerConfig:
             min_clients=data.get("min_clients", 2),
             round_timeout_sec=data.get("round_timeout_sec", 300.0),
             stale_device_timeout_sec=data.get("stale_device_timeout_sec", 120.0),
+            enable_timeout_watcher=data.get("enable_timeout_watcher", True),
             model_class=model_class,
             model_kwargs=data.get("model_kwargs", {}),
             model_init_path=data.get("model_init_path"),
-            onnx_export_dir=data.get("onnx_export_dir", "outputs/federated/models"),
         )
 
 
@@ -157,7 +157,6 @@ class FederatedServer:
             model_class=config.model_class,
             model_kwargs=config.model_kwargs,
             initial_weights_path=config.model_init_path,
-            onnx_export_dir=config.onnx_export_dir,
         )
         
         self._aggregator = Aggregator(
@@ -195,7 +194,8 @@ class FederatedServer:
         self._timeout_watcher_thread: Optional[threading.Thread] = None
         
         # Start the timeout watcher
-        self._start_timeout_watcher()
+        if config.enable_timeout_watcher:
+            self._start_timeout_watcher()
         
         logger.info(
             "FederatedServer initialized: min_clients=%d, timeout=%.0fs, watcher_interval=%.2fs",
@@ -275,7 +275,26 @@ class FederatedServer:
                     "Version mismatch from %s: base=%d, current=%d",
                     msg.device_id, msg.base_version, current_version,
                 )
-                # Still accept but log warning - device may be behind
+                if msg.base_version < current_version:
+                    self._queue_distribution(msg.device_id)
+                    return UpdateAck(
+                        device_id=msg.device_id,
+                        success=False,
+                        round_id=self._current_round_id,
+                        error_message=(
+                            f"Stale update rejected: base_version={msg.base_version}, "
+                            f"current_version={current_version}"
+                        ),
+                    )
+                return UpdateAck(
+                    device_id=msg.device_id,
+                    success=False,
+                    round_id=self._current_round_id,
+                    error_message=(
+                        f"Future update rejected: base_version={msg.base_version}, "
+                        f"current_version={current_version}"
+                    ),
+                )
             
             # Start round if first update
             if self._round_started_at is None:
@@ -522,12 +541,8 @@ class FederatedServer:
             self._round_status = RoundStatus.WAITING
             return
         
-        # Export ONNX
-        try:
-            onnx_path = self._model_manager.export_onnx()
-        except Exception as exc:
-            logger.error("ONNX export failed: %s", exc)
-            onnx_path = ""
+        # Removed ONNX export
+        onnx_path = ""
         
         # Create aggregated model message
         aggregated = AggregatedModel(
@@ -540,9 +555,11 @@ class FederatedServer:
         
         self._last_aggregated_model = aggregated
         
-        # Distribute to participating devices
+        # Distribute to all registered devices so non-participating edges
+        # also advance before their next local training cycle.
+        distribution_device_ids = list(self._registry.get_device_ids())
         self._round_status = RoundStatus.DISTRIBUTING
-        self._distribute_model(aggregated, result.participating_devices)
+        self._distribute_model(aggregated, distribution_device_ids)
         
         # Update registry versions
         self._registry.update_model_version(
@@ -640,7 +657,7 @@ class FederatedServer:
                 "registry": self._registry.get_stats(),
                 "model_info": {
                     "param_count": self._model_manager.get_info().param_count,
-                    "onnx_path": self._model_manager.latest_onnx_path,
+                    "onnx_path": "",
                 },
             }
     

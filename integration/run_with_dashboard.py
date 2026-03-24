@@ -23,8 +23,11 @@ Usage:
     # Or connect WebSocket to ws://127.0.0.1:8000/ws/analytics
     # Video stream:  http://127.0.0.1:8000/video/edge_00
 """
-
 from __future__ import annotations
+
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import argparse
 import logging
 import os
@@ -48,7 +51,7 @@ from federated.client import FederatedClient, FederatedClientConfig, LocalTraine
 from federated.transport import LocalTransport
 from federated.edge.client import EdgeClient
 from federated.edge.config import create_simulation_config
-from models.stgnn import STGNN
+from models.stgnn import STGNN, FEDERATED_EDGE_STGNN_KWARGS
 
 # Import dashboard components
 from dashboard_backend.adapter import DashboardAdapter
@@ -105,16 +108,16 @@ class FederatedSimulation:
         self.samples_per_client = samples_per_client
         
         # Server config
+        initial_weights_path = str(
+            _project_root / "outputs" / "checkpoints" / "stgnn_latest.pt"
+        )
         self.server_config = ServerConfig(
             min_clients=min_clients,
             round_timeout_sec=round_timeout_sec,
+            enable_timeout_watcher=False,
             model_class=STGNN,
-            model_kwargs={
-                "in_channels": 5,
-                "hidden_channels": 32,
-                "out_channels": 1,
-                "num_layers": 2,
-            },
+            model_kwargs=dict(FEDERATED_EDGE_STGNN_KWARGS),
+            model_init_path=initial_weights_path,
         )
         
         # Components
@@ -162,7 +165,7 @@ class FederatedSimulation:
                 max_local_epochs=2,
                 min_samples_for_training=16,
                 learning_rate=0.001,
-                batch_size=8,
+                batch_size=1,
             )
             
             # Create local trainer
@@ -224,7 +227,7 @@ class FederatedSimulation:
         try:
             # Start all clients (this initializes + registers + starts edge processing)
             for device_id, client in self.clients.items():
-                success = client.start(blocking=False)
+                success = client.start(blocking=False, start_federated_loop=False)
                 if success:
                     logger.info("[%s] Started (real pipeline running)", device_id)
                 else:
@@ -232,6 +235,10 @@ class FederatedSimulation:
             
             # Run rounds
             for round_num in range(num_rounds):
+                round_start_version = self.server.model_version
+                device_ids = list(self.clients.keys())
+                rotation = round_num % len(device_ids) if device_ids else 0
+                ordered_device_ids = device_ids[rotation:] + device_ids[:rotation]
                 logger.info("=" * 50)
                 logger.info("ROUND %d / %d", round_num + 1, num_rounds)
                 logger.info("=" * 50)
@@ -272,7 +279,17 @@ class FederatedSimulation:
                     client._poll_for_model()
                 
                 # Training cycle for each client
-                for device_id, client in self.clients.items():
+                for device_id in ordered_device_ids:
+                    client = self.clients[device_id]
+                    client._poll_for_model()
+                    if self.server.model_version != round_start_version:
+                        logger.info(
+                            "Round advanced to version %d after another client update; "
+                            "skipping remaining submissions for this round",
+                            self.server.model_version,
+                        )
+                        break
+
                     client._training_cycle()
                     stats = client.get_stats()
                     logger.info(
@@ -280,6 +297,13 @@ class FederatedSimulation:
                         device_id,
                         stats.get("samples_trained", 0),
                     )
+
+                    if self.server.model_version != round_start_version:
+                        logger.info(
+                            "Aggregation completed at version %d; syncing clients",
+                            self.server.model_version,
+                        )
+                        break
                 
                 # Wait for aggregation
                 time.sleep(1.0)

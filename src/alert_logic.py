@@ -20,7 +20,7 @@ class StampedeAlert:
         density_warn: float = 0.45,
         density_crit: float = 0.65,
         entropy_warn: float = 0.60,
-        entropy_crit: float = 0.85,
+        entropy_crit: float = 2.0,
         anomaly_crit: float = 0.08,
     ) -> None:
         """

@@ -114,6 +114,10 @@ class MockEdgeClient:
     def update_onnx_model(self, new_model_path: str, new_version: int) -> None:
         self._model_version = new_version
     
+    def update_model_weights(self, state_dict, new_version: int) -> None:
+        """Accept PyTorch weight updates from federated aggregation."""
+        self._model_version = new_version
+    
     def replace_training_buffer(self, new_buffer) -> None:
         """Replace training buffer with new one."""
         self._training_buffer = new_buffer
@@ -138,61 +142,57 @@ class TestLocalTransport:
         from federated.server import FederatedServer, ServerConfig
         from federated.transport import LocalTransport
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = ServerConfig(
-                min_clients=1,
-                model_class=DummySTGNN,
-                onnx_export_dir=tmpdir,
-            )
-            server = FederatedServer(config)
-            server._stop_timeout_watcher()
+        config = ServerConfig(
+            min_clients=1,
+            model_class=DummySTGNN,
+        )
+        server = FederatedServer(config)
+        server._stop_timeout_watcher()
             
-            transport = LocalTransport(server)
-            
-            ack = transport.register_device(
-                device_id="test-001",
-                device_type="laptop",
-                current_model_version=0,
-            )
-            
-            assert ack.success
-            assert ack.device_id == "test-001"
+        transport = LocalTransport(server)
+        
+        ack = transport.register_device(
+            device_id="test-001",
+            device_type="laptop",
+            current_model_version=0,
+        )
+        
+        assert ack.success
+        assert ack.device_id == "test-001"
     
     def test_submit_and_poll(self):
         """Test update submission and model polling."""
         from federated.server import FederatedServer, ServerConfig
         from federated.transport import LocalTransport
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = ServerConfig(
-                min_clients=1,
-                model_class=DummySTGNN,
-                onnx_export_dir=tmpdir,
-            )
-            server = FederatedServer(config)
-            server._stop_timeout_watcher()
+        config = ServerConfig(
+            min_clients=1,
+            model_class=DummySTGNN,
+        )
+        server = FederatedServer(config)
+        server._stop_timeout_watcher()
             
-            transport = LocalTransport(server)
-            
-            # Register
-            transport.register_device("dev-001")
-            
-            # Submit update
-            state_dict = create_dummy_state_dict()
-            ack = transport.submit_update(
-                device_id="dev-001",
-                state_dict=state_dict,
-                num_samples=100,
-                base_version=0,
-            )
-            
-            assert ack.success
-            
-            # Poll for model
-            model = transport.poll_aggregated_model("dev-001")
-            
-            assert model is not None
-            assert model.version == 1
+        transport = LocalTransport(server)
+        
+        # Register
+        transport.register_device("dev-001")
+        
+        # Submit update
+        state_dict = create_dummy_state_dict()
+        ack = transport.submit_update(
+            device_id="dev-001",
+            state_dict=state_dict,
+            num_samples=100,
+            base_version=0,
+        )
+        
+        assert ack.success
+        
+        # Poll for model
+        model = transport.poll_aggregated_model("dev-001")
+        
+        assert model is not None
+        assert model.version == 1
 
 
 # ============================================================
@@ -266,7 +266,6 @@ class TestFederatedRound:
             round_timeout_sec=30.0,
             model_class=DummySTGNN,
             model_kwargs={"in_channels": 5},
-            onnx_export_dir=tmpdir,
         )
         server = FederatedServer(config)
         server._stop_timeout_watcher()
@@ -496,7 +495,6 @@ class TestFullIntegration:
                 min_clients=3,
                 model_class=DummySTGNN,
                 model_kwargs={"in_channels": 5},
-                onnx_export_dir=tmpdir,
             )
             server = FederatedServer(config)
             server._stop_timeout_watcher()

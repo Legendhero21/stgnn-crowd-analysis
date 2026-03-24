@@ -9,11 +9,10 @@ are used as-is.
 
 Key responsibilities:
 - Orchestrate the existing pipeline components
-- Use ONNX for inference (via ONNXHotSwapper)
+- Perform PyTorch STGNN inference
 - Collect training samples (via TrainingBuffer)
-- Expose clean output interface for future dashboard
-- Support dynamic model updates from federated server
-"""
+- Expose clean output interface for the dashboard
+- Support dynamic model weight updates from federated server"""
 
 from __future__ import annotations
 
@@ -38,14 +37,15 @@ if str(_src_dir) not in sys.path:
 from alert_logic import StampedeAlert
 from crowd_metrics import CrowdMetrics
 from temporal_buffer import TemporalGraphBuffer
-from yolo_detector import YOLODetector
 
 # Import federated components
 from .config import EdgeConfig
 from .graph_builder import GraphBuilder
 from .video_source import VideoSource, create_video_source, FrameData
-from .onnx_swapper import ONNXHotSwapper
 from .training_buffer import TrainingBuffer
+from bytetrack_tracker import ByteTrackTracker
+from models.stgnn import STGNN, FEDERATED_EDGE_STGNN_KWARGS
+import torch
 
 
 logger = logging.getLogger(__name__)
@@ -138,10 +138,12 @@ class EdgeClient:
         
         # Components
         self._video_source: Optional[VideoSource] = None
-        self._yolo: Optional[YOLODetector] = None
+        self._tracker: Optional[ByteTrackTracker] = None
         self._graph_builder: Optional[GraphBuilder] = None
         self._temporal_buffer: Optional[TemporalGraphBuffer] = None
-        self._onnx_swapper: Optional[ONNXHotSwapper] = None
+        self.model: Optional[STGNN] = None
+        self._model_version: int = 0
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._alert_logic: Optional[StampedeAlert] = None
         self._training_buffer: Optional[TrainingBuffer] = None
         
@@ -163,6 +165,7 @@ class EdgeClient:
         # Delayed graph for training sample creation
         # Tracks previous temporal sequence and node count for sample pairing
         self._previous_x_seq: Optional[np.ndarray] = None
+        self._previous_mask_seq: Optional[np.ndarray] = None
         self._previous_edge_index: Optional[np.ndarray] = None
         self._previous_node_count: int = 0  # Guard against node count changes
         self._previous_frame_idx: int = 0
@@ -204,14 +207,14 @@ class EdgeClient:
             
             logger.info("Video source initialized: %s", self._video_source.source_id)
             
-            # 2. YOLO detector
-            self._yolo = YOLODetector(
+            # 2. ByteTrack detector
+            self._tracker = ByteTrackTracker(
                 model_path=self._config.yolo_model_path,
                 conf_threshold=self._config.yolo_conf_threshold,
                 device=self._config.yolo_device,
             )
             
-            logger.info("YOLO detector initialized")
+            logger.info("ByteTrack tracker initialized")
             
             # 3. Graph builder
             self._graph_builder = GraphBuilder(
@@ -224,13 +227,17 @@ class EdgeClient:
                 window_size=self._config.temporal_window,
             )
             
-            # 5. ONNX inference (hot-swappable)
-            self._onnx_swapper = ONNXHotSwapper(
-                initial_model_path=self._config.stgnn_onnx_path,
-                initial_version=0,
-            )
+            # 5. PyTorch STGNN Inference
+            self.model = STGNN(**FEDERATED_EDGE_STGNN_KWARGS)
+            if self._config.stgnn_pytorch_path and os.path.exists(self._config.stgnn_pytorch_path):
+                self.model.load_state_dict(
+                    torch.load(self._config.stgnn_pytorch_path, map_location=self.device)
+                )
+            self.model.to(self.device)
+            self.model.eval()
+            self._model_version = 0
             
-            logger.info("ONNX inference initialized: %s", self._onnx_swapper.info)
+            logger.info("PyTorch STGNN inference initialized")
             
             # 6. Alert logic
             self._alert_logic = StampedeAlert()
@@ -396,31 +403,52 @@ class EdgeClient:
         frame = frame_data.frame
         frame_idx = frame_data.frame_idx
         
-        # 1. YOLO detection
+        # 1. ByteTrack detection
         try:
-            centers, _ = self._yolo.detect_persons_with_boxes(frame)
-            centers = centers or []
+            tracked_persons = self._tracker.update(frame)
+            centers = [(p.cx, p.cy) for p in tracked_persons]
         except Exception as exc:
-            logger.error("YOLO detection failed: %s", exc)
+            logger.error("ByteTrack detection failed: %s", exc)
+            tracked_persons = []
             centers = []
         
         # 2. Graph building
-        graph = self._graph_builder.build_graph(centers, frame.shape[:2])
+        prev_positions = self._tracker.get_previous_positions()
+        graph = self._graph_builder.build_graph(tracked_persons, frame.shape[:2], prev_positions)
+        
+        if len(tracked_persons) > 0:
+            h_frame, w_frame = frame.shape[:2]
+            current_positions = self._tracker.get_previous_positions()
+            current_positions.update({
+                p.track_id: (p.cx / float(w_frame), p.cy / float(h_frame))
+                for p in tracked_persons
+            })
+            self._tracker.store_positions(current_positions)
         
         # 3. Temporal buffering
-        x_seq = self._temporal_buffer.push(graph)
+        x_seq, mask_seq = self._temporal_buffer.push(graph)
         
-        # 4. ONNX inference
-        if x_seq is not None and graph is not None:
-            anomaly_score = self._onnx_swapper.predict_from_sequence(
-                x_seq, graph["edge_index"]
-            )
+        # 4. PyTorch STGNN inference — scalar crowd-level anomaly score
+        if x_seq is not None and mask_seq is not None and graph is not None:
+            edge_index = graph["edge_index"]
+            try:
+                with torch.no_grad():
+                    x_tensor = torch.from_numpy(x_seq).float().to(self.device)
+                    edge_tensor = torch.from_numpy(edge_index).long().to(self.device)
+
+                    with self._lock:
+                        preds = self.model(x_tensor, edge_tensor)  # [1, 1]
+
+                    anomaly_score = float(np.clip(preds.item(), 0.0, 1.0))
+            except Exception as exc:
+                logger.error("STGNN inference failed: %s", exc)
+                anomaly_score = 0.0
         else:
             anomaly_score = 0.0
         
         # 5. Training sample collection (delayed by one frame)
         # Determine current node count for stability check
-        current_node_count = graph["x"].shape[0] if graph is not None else 0
+        current_node_count = graph["x"].shape[0] if graph and "x" in graph else 0
         
         self._collect_training_sample(graph, current_node_count, frame_idx)
         
@@ -431,6 +459,7 @@ class EdgeClient:
             if self._previous_node_count == 0 or current_node_count == self._previous_node_count:
                 # Node count stable, safe to store
                 self._previous_x_seq = x_seq
+                self._previous_mask_seq = mask_seq
                 self._previous_edge_index = graph["edge_index"]
                 self._previous_frame_idx = frame_idx
                 self._previous_node_count = current_node_count
@@ -442,6 +471,7 @@ class EdgeClient:
                     current_node_count,
                 )
                 self._previous_x_seq = None
+                self._previous_mask_seq = None
                 self._previous_edge_index = None
                 self._previous_node_count = 0
         
@@ -453,7 +483,8 @@ class EdgeClient:
         
         # 8. Draw visualization overlay (always, for streaming)
         vis_frame = self._draw_visualization(frame, centers, graph, anomaly_score, alert_state)
-        self._latest_frame = vis_frame
+        with self._lock:
+            self._latest_frame = vis_frame
         
         # Video writing (optional)
         if self._video_writer is not None:
@@ -470,7 +501,7 @@ class EdgeClient:
             anomaly_score=anomaly_score,
             metrics=metrics,
             alert_state=alert_state,
-            model_version=self._onnx_swapper.version,
+            model_version=self._model_version,
             processing_time_ms=processing_time_ms,
         )
     
@@ -492,7 +523,7 @@ class EdgeClient:
         - Node count must match between previous and current
         """
         # Guard: no previous state
-        if self._previous_x_seq is None or self._previous_edge_index is None:
+        if self._previous_x_seq is None or self._previous_edge_index is None or self._previous_mask_seq is None:
             return
         
         # Guard: no current graph
@@ -516,6 +547,7 @@ class EdgeClient:
         # Add sample
         self._training_buffer.add(
             x_seq=self._previous_x_seq,
+            mask_seq=self._previous_mask_seq,
             edge_index=self._previous_edge_index,
             next_frame_positions=current_positions,
             frame_idx=self._previous_frame_idx,
@@ -567,7 +599,7 @@ class EdgeClient:
         
         cv2.putText(
             vis,
-            f"Device: {self._device_id} | Model v{self._onnx_swapper.version}",
+            f"Device: {self._device_id} | Model v{self._model_version}",
             (20, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -632,7 +664,7 @@ class EdgeClient:
     @property
     def model_version(self) -> int:
         """Get current STGNN model version."""
-        return self._onnx_swapper.version if self._onnx_swapper else 0
+        return self._model_version
     
     @property
     def is_initialized(self) -> bool:
@@ -660,10 +692,7 @@ class EdgeClient:
         with self._lock:
             return self._latest_frame
     
-    def get_latest_result(self) -> Optional[FrameResult]:
-        """Get the most recent processing result for dashboard metrics."""
-        with self._lock:
-            return self._latest_result
+
     
     def get_stats(self) -> Dict[str, Any]:
         """Get client statistics."""
@@ -677,37 +706,31 @@ class EdgeClient:
                 "frame_count": self._frame_count,
                 "elapsed_sec": elapsed,
                 "fps": fps,
-                "model_version": self._onnx_swapper.version if self._onnx_swapper else 0,
+                "model_version": self._model_version,
                 "training_buffer": self._training_buffer.get_stats() if self._training_buffer else None,
-                "yolo_stats": self._yolo.get_stats() if self._yolo else None,
             }
     
-    def update_model(self, new_onnx_path: str, new_version: int) -> bool:
+    def update_model_weights(self, state_dict: dict, new_version: int) -> bool:
         """
-        Hot-swap the STGNN model.
-        
-        Args:
-            new_onnx_path: Path to new ONNX model.
-            new_version: New version number.
-        
-        Returns:
-            True if swap succeeded.
+        Hot-swap the STGNN model using PyTorch state_dict.
         """
-        if self._onnx_swapper is None:
+
+        if self.model is None:
             logger.error("Cannot update model: not initialized")
             return False
-        
-        return self._onnx_swapper.hot_swap(new_onnx_path, new_version)
+
+        try:
+            with self._lock:
+                self.model.load_state_dict(state_dict)
+                self.model.to(self.device)
+                self.model.eval()
+                self._model_version = new_version
+
+            logger.info("Hot-swapped STGNN model to version %d", new_version)
+            return True
+
+        except Exception as exc:
+            logger.error("Failed to update model weights: %s", exc)
+            return False
     
-    def update_onnx_model(self, new_model_path: str, new_version: int) -> bool:
-        """
-        Alias for update_model (used by FederatedClient._apply_aggregated_model).
-        
-        Args:
-            new_model_path: Path to new ONNX model.
-            new_version: New version number.
-        
-        Returns:
-            True if swap succeeded.
-        """
-        return self.update_model(new_model_path, new_version)
+

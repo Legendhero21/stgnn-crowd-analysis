@@ -35,11 +35,12 @@ class TrainingSample:
     Attributes:
         x_seq: Temporal sequence [1, T, N, 5] from TemporalBuffer.
         edge_index: Graph edges [2, E] from the last frame's graph.
-        target: Ground truth next-frame positions [N, 2].
+        target: Crowd instability score [N, 1] (same value repeated per node).
         timestamp: Unix timestamp when sample was collected.
         frame_idx: Frame index when sample was created.
     """
-    x_seq: np.ndarray          # [1, T, N, 5]
+    x_seq: np.ndarray          # [1, T, N, F]
+    mask_seq: np.ndarray       # [1, T, N]
     edge_index: np.ndarray     # [2, E]
     target: np.ndarray         # [N, 2]
     timestamp: float = field(default_factory=time.time)
@@ -56,8 +57,8 @@ class TrainingSample:
         if self.edge_index.ndim != 2 or self.edge_index.shape[0] != 2:
             raise ValueError(f"edge_index must be [2, E], got shape {self.edge_index.shape}")
         
-        if self.target.ndim != 2 or self.target.shape[1] != 2:
-            raise ValueError(f"target must be [N, 2], got shape {self.target.shape}")
+        if self.target.ndim != 2 or self.target.shape[1] != 1:
+            raise ValueError(f"target must be [N, 1], got shape {self.target.shape}")
         
         n_nodes = self.x_seq.shape[2]
         if self.target.shape[0] != n_nodes:
@@ -81,19 +82,20 @@ class TrainingSample:
         """Temporal window length (T)."""
         return self.x_seq.shape[1]
     
-    def to_tensors(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def to_tensors(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Return sample components as a tuple.
         
         Returns:
-            (x_seq, edge_index, target) tuple.
+            (x_seq, mask_seq, edge_index, target) tuple.
         """
-        return self.x_seq, self.edge_index, self.target
+        return self.x_seq, self.mask_seq, self.edge_index, self.target
     
     def copy(self) -> "TrainingSample":
         """Create a deep copy of this sample."""
         return TrainingSample(
             x_seq=self.x_seq.copy(),
+            mask_seq=self.mask_seq.copy(),
             edge_index=self.edge_index.copy(),
             target=self.target.copy(),
             timestamp=self.timestamp,
@@ -156,6 +158,7 @@ class TrainingBuffer:
     def add(
         self,
         x_seq: np.ndarray,
+        mask_seq: np.ndarray,
         edge_index: np.ndarray,
         next_frame_positions: np.ndarray,
         frame_idx: int = 0,
@@ -183,6 +186,10 @@ class TrainingBuffer:
             logger.debug("Rejected sample: x_seq is empty")
             return False
         
+        if mask_seq is None or mask_seq.size == 0:
+            logger.debug("Rejected sample: mask_seq is empty")
+            return False
+            
         if edge_index is None or edge_index.size == 0:
             logger.debug("Rejected sample: edge_index is empty")
             return False
@@ -196,7 +203,7 @@ class TrainingBuffer:
             logger.debug("Rejected sample: x_seq shape %s invalid", x_seq.shape)
             return False
         
-        n_nodes = x_seq.shape[2]
+        n_nodes = x_seq.shape[2]  # MAX_NODES (padded)
         
         if next_frame_positions.shape[0] != n_nodes:
             logger.debug(
@@ -206,9 +213,60 @@ class TrainingBuffer:
             )
             return False
         
+        # --- Mask-aware instability computation ---
+        # Use mask from the last timestep to identify real nodes
+        last_mask = mask_seq[0, -1]  # [MAX_NODES]
+        real_nodes = last_mask > 0.5
+        n_real = int(np.sum(real_nodes))
+
+        # Guard: skip if too few real nodes for meaningful stats
+        if n_real < 3:
+            logger.debug(
+                "Skipped training sample: too few real nodes (%d < 3)", n_real,
+            )
+            return False
+
+        # Extract real-node data from last frame
+        last_features = x_seq[0, -1]  # [MAX_NODES, F]
+        real_features = last_features[real_nodes]  # [n_real, F]
+
+        real_dx = real_features[:, 2]  # velocity-x
+        real_dy = real_features[:, 3]  # velocity-y
+        real_speed = np.sqrt(real_dx ** 2 + real_dy ** 2)
+        real_density = real_features[:, 6] if real_features.shape[1] > 6 else real_features[:, 4]
+
+        # --- Component 1: velocity variance (directional disorder) ---
+        vel_std = float(np.std(real_speed)) if n_real > 1 else 0.0
+
+        # --- Component 2: mean density ---
+        mean_density = float(np.mean(real_density))
+
+        # --- Component 3: motion entropy (angular disorder) ---
+        angles = np.arctan2(real_dy, real_dx)
+        hist, _ = np.histogram(angles, bins=8, range=(-np.pi, np.pi))
+        hist_sum = hist.sum()
+        if hist_sum > 0:
+            probs = hist.astype(np.float64) / hist_sum
+            probs = probs[probs > 0]
+            motion_entropy = float(-np.sum(probs * np.log(probs)))
+        else:
+            motion_entropy = 0.0
+
+        # --- Combine into instability score ---
+        # Scale each component to roughly [0, 1] range, then combine
+        raw_instability = (
+            0.4 * vel_std
+            + 0.3 * mean_density
+            + 0.3 * (motion_entropy / 2.08)  # max entropy for 8 bins = ln(8) ≈ 2.08
+        )
+
+        # Apply log1p + tanh to spread values and avoid near-zero collapse
+        instability = float(np.tanh(np.log1p(raw_instability * 5.0)))
+        instability = float(np.clip(instability, 0.0, 1.0))
+        
         # Ensure we only take x,y from positions
         if next_frame_positions.ndim == 2 and next_frame_positions.shape[1] >= 2:
-            target = next_frame_positions[:, :2].copy()
+            target = np.full((n_nodes, 1), instability, dtype=np.float32).copy()
         else:
             logger.debug("Rejected sample: invalid target shape %s", next_frame_positions.shape)
             return False
@@ -217,6 +275,7 @@ class TrainingBuffer:
         try:
             sample = TrainingSample(
                 x_seq=x_seq.copy().astype(np.float32),
+                mask_seq=mask_seq.copy().astype(np.float32),
                 edge_index=edge_index.copy().astype(np.int64),
                 target=target.astype(np.float32),
                 timestamp=time.time(),
@@ -234,12 +293,32 @@ class TrainingBuffer:
             if was_full:
                 self._total_evicted += 1
             self._last_add_time = sample.timestamp
+
+        # Training health logging (periodic)
+        if self._total_added % 50 == 0:
+            with self._lock:
+                buf_size = len(self._buffer)
+                if buf_size > 0:
+                    mean_target = float(np.mean(
+                        [s.target[0, 0] for s in self._buffer]
+                    ))
+                else:
+                    mean_target = 0.0
+            logger.info(
+                "TrainingBuffer health: size=%d, total_added=%d, "
+                "total_skipped=%d, mean_target=%.4f",
+                buf_size,
+                self._total_added,
+                self._total_evicted,
+                mean_target,
+            )
         
         return True
     
     def add_from_graphs(
         self,
         current_x_seq: np.ndarray,
+        current_mask_seq: np.ndarray,
         current_edge_index: np.ndarray,
         next_graph: dict,
         frame_idx: int = 0,
@@ -269,7 +348,7 @@ class TrainingBuffer:
         # Extract positions (first 2 columns: x, y)
         next_positions = next_features[:, :2]
         
-        return self.add(current_x_seq, current_edge_index, next_positions, frame_idx)
+        return self.add(current_x_seq, current_mask_seq, current_edge_index, next_positions, frame_idx)
     
     def __len__(self) -> int:
         """Number of samples in buffer."""

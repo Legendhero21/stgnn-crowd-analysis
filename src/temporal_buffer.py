@@ -15,7 +15,7 @@ from typing import Optional, Dict, List, Tuple
 
 # Maximum number of nodes per frame. Graphs with fewer nodes are
 # zero-padded; graphs with more nodes are truncated (oldest excess dropped).
-MAX_NODES: int = 50
+MAX_NODES: int = 100
 
 
 class TemporalGraphBuffer:
@@ -69,23 +69,26 @@ class TemporalGraphBuffer:
             raise KeyError("Graph dict must contain key 'x' with node features.")
 
         x = graph["x"]
-        if not isinstance(x, np.ndarray):
-            raise TypeError(f"graph['x'] must be np.ndarray, got {type(x)}")
-        if x.ndim != 2:
-            raise ValueError(f"graph['x'] must be 2-D [N, F], got shape {x.shape}")
+        mask = graph.get("mask")
 
-        n_nodes, n_feat = x.shape
-        if n_nodes == 0:
-            # Zero detections after filtering — treat like None.
-            return None, None
+        if mask is None:
+            raise ValueError("Graph must include a mask when using padded nodes.")
 
-        # --- Pad / truncate to MAX_NODES ---
-        x_padded = np.zeros((self.max_nodes, n_feat), dtype=np.float32)
-        mask = np.zeros(self.max_nodes, dtype=np.float32)
+        x = np.asarray(x)
+        mask = np.asarray(mask)
 
-        n_valid = min(n_nodes, self.max_nodes)
-        x_padded[:n_valid] = x[:n_valid]
-        mask[:n_valid] = 1.0
+        if x.shape[0] != self.max_nodes:
+            raise ValueError(
+                f"Expected x to already be padded to MAX_NODES={self.max_nodes}, got {x.shape}"
+            )
+
+        if mask.shape[0] != self.max_nodes:
+            raise ValueError(
+                f"Mask length mismatch: expected {self.max_nodes}, got {mask.shape[0]}"
+            )
+
+        x_padded = x.astype(np.float32)
+        mask = mask.astype(np.float32)
 
         self.buffer.append({"x_padded": x_padded, "mask": mask})
 
