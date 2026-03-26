@@ -308,7 +308,7 @@ class LocalTrainer:
                     
                     
                     # Compute masked loss
-                    prediction = model(x_seq, edge_index)  # [1,1]
+                    prediction = model(x_seq, edge_index, mask_seq)  # [1,1]
                     target = target.mean().unsqueeze(0).unsqueeze(0)
 
                     loss = self._loss_fn(prediction, target)
@@ -397,7 +397,7 @@ class LocalTrainer:
                 target = target.to(self._device)
                 
                 # Model output: [1, 1] scalar anomaly score
-                prediction = model(x_seq, edge_index)
+                prediction = model(x_seq, edge_index, mask_seq)
                 
                 # Target is [N, 1] instability; reduce to scalar
                 target_scalar = target.mean().unsqueeze(0).unsqueeze(0)

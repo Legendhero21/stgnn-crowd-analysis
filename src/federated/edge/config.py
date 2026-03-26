@@ -60,6 +60,8 @@ class EdgeConfig:
     stgnn_onnx_path: str = ""
     stgnn_pytorch_path: str = ""
     output_dir: str = ""
+    video_frame_stride: int = 1
+    processing_width: int = 0  # 0 disables resize
     
     # === Graph Parameters ===
     graph_radius: float = 0.05
@@ -69,6 +71,7 @@ class EdgeConfig:
     # === YOLO Parameters ===
     yolo_conf_threshold: float = 0.4
     yolo_device: Literal["cuda", "cpu"] = "cuda"
+    yolo_imgsz: int = 640
     
     # === Anomaly Thresholds ===
     anomaly_threshold_warning: float = 0.05
@@ -130,6 +133,19 @@ class EdgeConfig:
         if self.output_fps < 1:
             errors.append(f"output_fps must be >= 1, got {self.output_fps}")
         
+        if self.video_frame_stride < 1:
+            errors.append(
+                f"video_frame_stride must be >= 1, got {self.video_frame_stride}"
+            )
+        
+        if self.processing_width < 0:
+            errors.append(
+                f"processing_width must be >= 0, got {self.processing_width}"
+            )
+        
+        if self.yolo_imgsz < 1:
+            errors.append(f"yolo_imgsz must be >= 1, got {self.yolo_imgsz}")
+        
         if errors:
             raise ValueError(f"EdgeConfig validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
     
@@ -177,11 +193,14 @@ class EdgeConfig:
             stgnn_onnx_path=get_env("STGNN_ONNX_PATH"),
             stgnn_pytorch_path=get_env("STGNN_PYTORCH_PATH"),
             output_dir=get_env("OUTPUT_DIR"),
+            video_frame_stride=get_env_int("VIDEO_FRAME_STRIDE", 1),
+            processing_width=get_env_int("PROCESSING_WIDTH", 0),
             graph_radius=get_env_float("GRAPH_RADIUS", 0.05),
             min_nodes=get_env_int("MIN_NODES", 2),
             temporal_window=get_env_int("TEMPORAL_WINDOW", 5),
             yolo_conf_threshold=get_env_float("YOLO_CONF_THRESHOLD", 0.4),
             yolo_device=get_env("YOLO_DEVICE", "cuda"),  # type: ignore
+            yolo_imgsz=get_env_int("YOLO_IMGSZ", 640),
             anomaly_threshold_warning=get_env_float("ANOMALY_THRESHOLD_WARNING", 0.05),
             anomaly_threshold_critical=get_env_float("ANOMALY_THRESHOLD_CRITICAL", 0.15),
             training_buffer_size=get_env_int("TRAINING_BUFFER_SIZE", 1000),
@@ -295,6 +314,9 @@ def create_simulation_config(
         stgnn_onnx_path=os.path.join(base_dir, "outputs", "evaluation", "stgnn_final.onnx"),
         stgnn_pytorch_path=os.path.join(base_dir, "outputs", "checkpoints", "stgnn_latest.pt"),
         output_dir=os.path.join(base_dir, "outputs", "pipeline_results"),
+        video_frame_stride=4,      # Skip frames to keep end-to-end latency lower
+        processing_width=960,      # Resize 1080p inputs before detection/inference
+        yolo_imgsz=640,
         display_visualization=False,  # Headless for simulation
         save_output_video=False,
     )

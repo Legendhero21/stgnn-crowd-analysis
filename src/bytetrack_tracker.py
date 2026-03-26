@@ -53,12 +53,14 @@ class ByteTrackTracker:
         conf_threshold: float = 0.4,
         device: str = "cuda",
         tracker_type: str = "bytetrack.yaml",
+        imgsz: int = 640,
     ) -> None:
         from ultralytics import YOLO
 
         self.conf_threshold = float(conf_threshold)
         self.device = device
         self.tracker_type = tracker_type
+        self.imgsz = max(1, int(imgsz))
 
         try:
             self.model = YOLO(model_path)
@@ -96,6 +98,7 @@ class ByteTrackTracker:
             source=frame,
             conf=self.conf_threshold,
             device=self.device,
+            imgsz=self.imgsz,
             verbose=False,
             classes=[0],          # person class only
             persist=True,         # keep tracker state across calls

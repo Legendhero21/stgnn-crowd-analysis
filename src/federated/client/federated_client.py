@@ -613,6 +613,8 @@ class FederatedClient:
     def get_stats(self) -> dict:
         """Get client statistics."""
         with self._lock:
+            training_buffer = getattr(self._edge_client, "training_buffer", None)
+            samples_buffered = len(training_buffer) if training_buffer is not None else 0
             return {
                 "device_id": self.device_id,
                 "state": self._state.value,
@@ -620,6 +622,6 @@ class FederatedClient:
                 "is_registered": self._is_registered,
                 "training_rounds": self._training_rounds,
                 "samples_trained": self._samples_trained,
-                "samples_buffered": len(self._edge_client.training_buffer),
+                "samples_buffered": samples_buffered,
                 "last_training_time": self._last_training_time,
             }

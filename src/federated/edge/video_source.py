@@ -169,6 +169,7 @@ class VideoFileSource(VideoSource):
         file_path: str,
         loop: bool = False,
         max_loops: Optional[int] = None,
+        frame_stride: int = 1,
     ):
         """
         Initialize video file source.
@@ -188,6 +189,7 @@ class VideoFileSource(VideoSource):
         self._loop = loop
         self._max_loops = max_loops
         self._loop_count = 0
+        self._frame_stride = max(1, int(frame_stride))
         
         self._cap: Optional[cv2.VideoCapture] = None
         self._frame_idx = 0
@@ -243,12 +245,13 @@ class VideoFileSource(VideoSource):
                 self._fps = 30.0
             
             logger.info(
-                "Opened video: %s (%dx%d @ %.1f FPS, %d frames)",
+                "Opened video: %s (%dx%d @ %.1f FPS, %d frames, stride=%d)",
                 self._file_path.name,
                 self._frame_width,
                 self._frame_height,
                 self._fps,
                 self._total_frames,
+                self._frame_stride,
             )
             
             return True
@@ -284,14 +287,20 @@ class VideoFileSource(VideoSource):
             
             timestamp_ms = self._cap.get(cv2.CAP_PROP_POS_MSEC)
             
+            current_idx = self._frame_idx
             frame_data = FrameData(
                 frame=frame,
-                frame_idx=self._frame_idx,
+                frame_idx=current_idx,
                 timestamp_ms=timestamp_ms,
                 source_id=self.source_id,
             )
             
-            self._frame_idx += 1
+            if self._frame_stride > 1:
+                for _ in range(self._frame_stride - 1):
+                    if not self._cap.grab():
+                        break
+            
+            self._frame_idx += self._frame_stride
             
             return frame_data
     
@@ -599,7 +608,11 @@ class WebcamSource(VideoSource):
             return self._cap is not None and self._cap.isOpened()
 
 
-def create_video_source(source: str, loop: bool = False) -> VideoSource:
+def create_video_source(
+    source: str,
+    loop: bool = False,
+    frame_stride: int = 1,
+) -> VideoSource:
     """
     Factory function to create appropriate video source.
     
@@ -624,4 +637,8 @@ def create_video_source(source: str, loop: bool = False) -> VideoSource:
         return VideoStreamSource(stream_url=source)
     
     # Assume it's a file path
-    return VideoFileSource(file_path=source, loop=loop)
+    return VideoFileSource(
+        file_path=source,
+        loop=loop,
+        frame_stride=frame_stride,
+    )

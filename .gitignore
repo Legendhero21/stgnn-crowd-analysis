@@ -19,7 +19,7 @@ src/checkpoints/
 logs/
 runs/
 visualizations/
-checkpoints/
+
 evaluation/
 eval_results/
 pipeline_results_shibuya/

@@ -200,6 +200,7 @@ class EdgeClient:
             self._video_source = create_video_source(
                 self._config.video_source,
                 loop=True,  # Loop for continuous operation
+                frame_stride=self._config.video_frame_stride,
             )
             
             if not self._video_source.open():
@@ -212,6 +213,7 @@ class EdgeClient:
                 model_path=self._config.yolo_model_path,
                 conf_threshold=self._config.yolo_conf_threshold,
                 device=self._config.yolo_device,
+                imgsz=self._config.yolo_imgsz,
             )
             
             logger.info("ByteTrack tracker initialized")
@@ -269,6 +271,10 @@ class EdgeClient:
         os.makedirs(self._config.output_dir, exist_ok=True)
         
         w, h = self._video_source.frame_size
+        if self._config.processing_width > 0 and w > self._config.processing_width:
+            scale = self._config.processing_width / float(w)
+            w = int(self._config.processing_width)
+            h = int(h * scale)
         if w <= 0 or h <= 0:
             logger.warning("Invalid frame size, skipping video writer")
             return
@@ -372,7 +378,10 @@ class EdgeClient:
                     
                     # Visualization
                     if self._config.display_visualization:
-                        self._visualize(frame_data.frame, result)
+                        with self._lock:
+                            vis = None if self._latest_frame is None else self._latest_frame.copy()
+                        if vis is not None:
+                            cv2.imshow(f"EdgeClient: {self._device_id}", vis)
                 
                 # Check for exit key
                 if self._config.display_visualization:
@@ -401,6 +410,10 @@ class EdgeClient:
         start_time = time.time()
         
         frame = frame_data.frame
+        if self._config.processing_width > 0 and frame.shape[1] > self._config.processing_width:
+            new_w = int(self._config.processing_width)
+            new_h = int(frame.shape[0] * (new_w / float(frame.shape[1])))
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
         frame_idx = frame_data.frame_idx
         
         # 1. ByteTrack detection
@@ -436,10 +449,12 @@ class EdgeClient:
                     x_tensor = torch.from_numpy(x_seq).float().to(self.device)
                     edge_tensor = torch.from_numpy(edge_index).long().to(self.device)
 
+                    mask_tensor = torch.from_numpy(mask_seq).float().to(self.device)
                     with self._lock:
-                        preds = self.model(x_tensor, edge_tensor)  # [1, 1]
+                        preds = self.model(x_tensor, edge_tensor, mask_tensor)  # [1, 1]
 
-                    anomaly_score = float(np.clip(preds.item(), 0.0, 1.0))
+                    score_tensor = preds if preds.numel() == 1 else preds.mean()
+                    anomaly_score = float(np.clip(score_tensor.item(), 0.0, 1.0))
             except Exception as exc:
                 logger.error("STGNN inference failed: %s", exc)
                 anomaly_score = 0.0

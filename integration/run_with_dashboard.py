@@ -103,9 +103,11 @@ class FederatedSimulation:
         samples_per_client: int = 100,
         min_clients: int = 2,
         round_timeout_sec: float = 10.0,
+        video_sources: Optional[List[str]] = None,
     ):
         self.num_clients = num_clients
         self.samples_per_client = samples_per_client
+        self.video_sources = video_sources or []
         
         # Server config
         initial_weights_path = str(
@@ -137,13 +139,18 @@ class FederatedSimulation:
         self.server = FederatedServer(self.server_config)
         
         # 2. Create clients with REAL EdgeClients
-        video_path = str(
+        default_video = str(
             Path(__file__).parent.parent / "data" / "videos" / "test_crowd.mp4"
         )
         base_dir = str(_project_root)
         
         for i in range(self.num_clients):
             device_id = f"edge_{i:02d}"
+            video_path = (
+                self.video_sources[i % len(self.video_sources)]
+                if self.video_sources
+                else default_video
+            )
             
             # Create real EdgeConfig via factory
             edge_config = create_simulation_config(
@@ -184,7 +191,7 @@ class FederatedSimulation:
             )
             
             self.clients[device_id] = client
-            logger.info("[%s] Real EdgeClient created", device_id)
+            logger.info("[%s] Real EdgeClient created (video=%s)", device_id, video_path)
         
         # 3. Create dashboard adapter
         self.adapter = DashboardAdapter(
@@ -210,7 +217,7 @@ class FederatedSimulation:
         self._dashboard_thread.start()
         logger.info("Dashboard started at http://127.0.0.1:%d", port)
     
-    def run_simulation(self, num_rounds: int = 3) -> None:
+    def run_simulation(self, num_rounds: int = 3, auto_cleanup: bool = True) -> None:
         """
         Run federated learning simulation with real edge pipeline.
         
@@ -221,22 +228,34 @@ class FederatedSimulation:
         
         Args:
             num_rounds: Number of federated rounds to run.
+            auto_cleanup: If True, stop clients/server when simulation ends.
         """
         logger.info("Starting simulation (%d rounds)...", num_rounds)
         
         try:
             # Start all clients (this initializes + registers + starts edge processing)
+            active_client_ids: List[str] = []
             for device_id, client in self.clients.items():
                 success = client.start(blocking=False, start_federated_loop=False)
                 if success:
+                    active_client_ids.append(device_id)
                     logger.info("[%s] Started (real pipeline running)", device_id)
                 else:
                     logger.error("[%s] Failed to start!", device_id)
+
+            if len(active_client_ids) < self.server_config.min_clients:
+                logger.error(
+                    "Only %d/%d clients started; need at least %d to run federated rounds",
+                    len(active_client_ids),
+                    len(self.clients),
+                    self.server_config.min_clients,
+                )
+                return
             
             # Run rounds
             for round_num in range(num_rounds):
                 round_start_version = self.server.model_version
-                device_ids = list(self.clients.keys())
+                device_ids = list(active_client_ids)
                 rotation = round_num % len(device_ids) if device_ids else 0
                 ordered_device_ids = device_ids[rotation:] + device_ids[:rotation]
                 logger.info("=" * 50)
@@ -252,7 +271,8 @@ class FederatedSimulation:
                 wait_start = time.time()
                 while time.time() - wait_start < max_wait:
                     all_ready = True
-                    for device_id, client in self.clients.items():
+                    for device_id in active_client_ids:
+                        client = self.clients[device_id]
                         buf = client._edge_client.training_buffer
                         sample_count = len(buf) if buf else 0
                         if sample_count < min_samples:
@@ -263,7 +283,8 @@ class FederatedSimulation:
                     time.sleep(2.0)
                 
                 # Log buffer status
-                for device_id, client in self.clients.items():
+                for device_id in active_client_ids:
+                    client = self.clients[device_id]
                     buf = client._edge_client.training_buffer
                     count = len(buf) if buf else 0
                     edge_stats = client._edge_client.get_stats()
@@ -275,7 +296,8 @@ class FederatedSimulation:
                     )
                 
                 # Sync models before training
-                for device_id, client in self.clients.items():
+                for device_id in active_client_ids:
+                    client = self.clients[device_id]
                     client._poll_for_model()
                 
                 # Training cycle for each client
@@ -309,7 +331,8 @@ class FederatedSimulation:
                 time.sleep(1.0)
                 
                 # Poll for new aggregated model
-                for device_id, client in self.clients.items():
+                for device_id in active_client_ids:
+                    client = self.clients[device_id]
                     client._poll_for_model()
                 
                 # Log server stats
@@ -331,7 +354,8 @@ class FederatedSimulation:
         except KeyboardInterrupt:
             logger.info("Simulation interrupted")
         finally:
-            self.cleanup()
+            if auto_cleanup:
+                self.cleanup()
     
     def cleanup(self) -> None:
         """Clean up resources."""
@@ -387,13 +411,29 @@ def main():
         action="store_true",
         help="Keep dashboard running after simulation",
     )
+    parser.add_argument(
+        "--videos",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated video paths for edge clients "
+            "(e.g. video1.mp4,video2.mp4,video3.mp4)"
+        ),
+    )
     
     args = parser.parse_args()
+    
+    video_sources = [v.strip() for v in args.videos.split(",") if v.strip()]
+    if video_sources:
+        logger.info("Using %d custom video source(s)", len(video_sources))
+        for idx, path in enumerate(video_sources):
+            logger.info("  video[%d]=%s", idx, path)
     
     # Create and run simulation
     sim = FederatedSimulation(
         num_clients=args.num_clients,
         samples_per_client=args.samples,
+        video_sources=video_sources,
     )
     
     sim.setup()
@@ -408,7 +448,7 @@ def main():
     print("WebSocket: ws://127.0.0.1:%d/ws/analytics" % args.port)
     print("=" * 60 + "\n")
     
-    sim.run_simulation(num_rounds=args.rounds)
+    sim.run_simulation(num_rounds=args.rounds, auto_cleanup=not args.dashboard_only)
     
     if args.dashboard_only:
         print("\nDashboard still running. Press Ctrl+C to exit.")
@@ -417,6 +457,8 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
+        finally:
+            sim.cleanup()
 
 
 if __name__ == "__main__":

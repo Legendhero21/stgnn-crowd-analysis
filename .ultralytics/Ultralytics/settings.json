@@ -1,0 +1,21 @@
+{
+  "settings_version": "0.0.6",
+  "datasets_dir": "D:\\stgnn_project\\datasets",
+  "weights_dir": "weights",
+  "runs_dir": "runs",
+  "uuid": "693a7a717ad6400cc67d705ca685b46a8aa5de8d7e3d3e37f23b4368fc04d203",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "hub": true,
+  "mlflow": true,
+  "neptune": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}
