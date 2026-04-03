@@ -8,8 +8,8 @@ interface DeviceMetricsProps {
 
 function getValueClass(alertState: AlertState | undefined): string {
     switch (alertState) {
-        case "STAMPEDE":
-            return "stampede";
+        case "HIGH_ALERT":
+            return "high-alert";
         case "UNSTABLE":
             return "unstable";
         default:
@@ -41,38 +41,16 @@ export function DeviceMetrics({ metrics }: DeviceMetricsProps) {
                 Device Metrics — {metrics.device_id}
             </h2>
 
-            {/* Side-by-side: video left, metrics right */}
-            <div style={{
-                display: "flex",
-                gap: "1rem",
-                alignItems: "flex-start",
-            }}>
-                {/* Video stream — compact */}
-                <div style={{
-                    flex: "0 0 55%",
-                    borderRadius: "8px",
-                    overflow: "hidden",
-                    border: "1px solid var(--border-color, #333)",
-                    backgroundColor: "#000",
-                }}>
+            <div className="device-layout">
+                <div className="video-panel">
                     <img
                         src={`http://127.0.0.1:8000/video/${metrics.device_id}`}
                         alt={`Live feed — ${metrics.device_id}`}
-                        style={{
-                            width: "100%",
-                            height: "auto",
-                            display: "block",
-                        }}
+                        className="device-video"
                     />
                 </div>
 
-                {/* Metrics grid — right side */}
-                <div style={{
-                    flex: "1",
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: "0.6rem",
-                }}>
+                <div className="metrics-grid compact">
                     <div className="metric-card">
                         <div className="metric-label">Persons</div>
                         <div className="metric-value neutral">
@@ -102,9 +80,9 @@ export function DeviceMetrics({ metrics }: DeviceMetricsProps) {
                     </div>
 
                     <div className="metric-card">
-                        <div className="metric-label">Model</div>
+                        <div className="metric-label">Velocity</div>
                         <div className="metric-value neutral">
-                            v{metrics.model_version}
+                            {formatNumber(metrics.avg_velocity, 3)}
                         </div>
                     </div>
 

@@ -2,7 +2,7 @@
 // Aligned with backend schemas.py
 
 // Enums
-export type AlertState = "NORMAL" | "UNSTABLE" | "STAMPEDE";
+export type AlertState = "NORMAL" | "UNSTABLE" | "HIGH_ALERT";
 export type ClientState = "IDLE" | "COLLECTING" | "TRAINING" | "SUBMITTING" | "WAITING_MODEL";
 export type RoundStatus = "WAITING" | "AGGREGATING" | "DISTRIBUTING" | "COMPLETE";
 export type DeviceStatus = "ACTIVE" | "STALE" | "OFFLINE";

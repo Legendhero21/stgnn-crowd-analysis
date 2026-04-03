@@ -190,8 +190,12 @@ class TrainingBuffer:
             logger.debug("Rejected sample: mask_seq is empty")
             return False
             
-        if edge_index is None or edge_index.size == 0:
-            logger.debug("Rejected sample: edge_index is empty")
+        if edge_index is None:
+            logger.debug("Rejected sample: edge_index is missing")
+            return False
+
+        if edge_index.ndim != 2 or edge_index.shape[0] != 2:
+            logger.debug("Rejected sample: edge_index shape %s invalid", edge_index.shape)
             return False
         
         if next_frame_positions is None or next_frame_positions.size == 0:

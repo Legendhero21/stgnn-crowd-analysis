@@ -17,7 +17,8 @@ interface TrendChartProps {
     deviceId: string | null;
 }
 
-const STAMPEDE_THRESHOLD = 0.7;
+const UNSTABLE_THRESHOLD = 0.7;
+const HIGH_ALERT_THRESHOLD = 0.95;
 
 export function TrendChart({ data, deviceId }: TrendChartProps) {
     if (!deviceId) {
@@ -51,7 +52,7 @@ export function TrendChart({ data, deviceId }: TrendChartProps) {
                             stroke="#666"
                             tick={{ fill: "#666", fontSize: 10 }}
                             tickLine={{ stroke: "#666" }}
-                            ticks={[0, 0.25, 0.5, 0.7, 1]}
+                            ticks={[0, 0.25, 0.5, 0.7, 0.95, 1]}
                         />
                         <Tooltip
                             contentStyle={{
@@ -63,13 +64,24 @@ export function TrendChart({ data, deviceId }: TrendChartProps) {
                             labelStyle={{ color: "#a0a0a0" }}
                         />
 
-                        {/* Stampede threshold line */}
                         <ReferenceLine
-                            y={STAMPEDE_THRESHOLD}
+                            y={UNSTABLE_THRESHOLD}
+                            stroke="#ffcc00"
+                            strokeDasharray="4 4"
+                            label={{
+                                value: "UNSTABLE",
+                                position: "insideTopRight",
+                                fill: "#ffcc00",
+                                fontSize: 10,
+                            }}
+                        />
+
+                        <ReferenceLine
+                            y={HIGH_ALERT_THRESHOLD}
                             stroke="#ff3366"
                             strokeDasharray="5 5"
                             label={{
-                                value: "STAMPEDE",
+                                value: "HIGH ALERT",
                                 position: "right",
                                 fill: "#ff3366",
                                 fontSize: 10,

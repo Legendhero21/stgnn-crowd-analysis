@@ -7,24 +7,23 @@ interface AlertBannerProps {
 }
 
 export function AlertBanner({ edgeMetrics }: AlertBannerProps) {
-    // Check if ANY device has STAMPEDE alert
-    let hasStampede = false;
-    const stampedeDevices: string[] = [];
+    let hasHighAlert = false;
+    const highAlertDevices: string[] = [];
 
     edgeMetrics.forEach((metrics, deviceId) => {
-        if (metrics.alert_state === "STAMPEDE") {
-            hasStampede = true;
-            stampedeDevices.push(deviceId);
+        if (metrics.alert_state === "HIGH_ALERT") {
+            hasHighAlert = true;
+            highAlertDevices.push(deviceId);
         }
     });
 
-    if (!hasStampede) {
+    if (!hasHighAlert) {
         return null;
     }
 
     return (
         <div className="alert-banner">
-            🚨 STAMPEDE ALERT — {stampedeDevices.join(", ")}
+            HIGH ALERT — {highAlertDevices.join(", ")}
         </div>
     );
 }

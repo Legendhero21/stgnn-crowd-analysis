@@ -38,11 +38,31 @@ class STGCNBlock(nn.Module):
         if in_channels != out_channels:
             self.residual_proj = nn.Linear(in_channels, out_channels)
 
-    def forward(self, x, edge_index):
+    def _masked_batch_norm(self, norm_layer, x, valid_mask):
+        """Apply batch norm using only valid node/time positions."""
+        if valid_mask is None:
+            return norm_layer(x)
+
+        valid_mask = valid_mask.reshape(-1).to(torch.bool)
+        out = torch.zeros_like(x)
+
+        valid_count = int(valid_mask.sum().item())
+        if valid_count == 0:
+            return out
+
+        if self.training and valid_count == 1:
+            out[valid_mask] = x[valid_mask]
+            return out
+
+        out[valid_mask] = norm_layer(x[valid_mask])
+        return out
+
+    def forward(self, x, edge_index, mask_seq=None):
         """
         Args:
             x: [B, T, N, F]
             edge_index: [2, E]
+            mask_seq: Optional [B, T, N] node-validity mask.
         Returns:
             [B, T, N, out_channels]
         """
@@ -60,6 +80,14 @@ class STGCNBlock(nn.Module):
         else:
             edge_index = edge_index.to(torch.long).to(x.device)
 
+        if mask_seq is not None:
+            if mask_seq.dim() != 3 or mask_seq.shape != (B, T, N):
+                raise ValueError(
+                    f"mask_seq must be [B, T, N]={((B, T, N))}, got {tuple(mask_seq.shape)}"
+                )
+            mask_seq = mask_seq.to(device=x.device, dtype=x.dtype)
+            x = x * mask_seq.unsqueeze(-1)
+
         residual = x
 
         out = []
@@ -69,31 +97,54 @@ class STGCNBlock(nn.Module):
                 xt = torch.nan_to_num(xt, nan=0.0, posinf=1e6, neginf=-1e6)
 
             xt = self.gcn(xt, edge_index)
-            xt = self.bn_spatial(xt)
+            if mask_seq is not None:
+                valid_nodes = mask_seq[:, t, :].reshape(-1) > 0.5
+                xt = self._masked_batch_norm(self.bn_spatial, xt, valid_nodes)
+            else:
+                xt = self.bn_spatial(xt)
             xt = F.relu(xt)
             xt = self.dropout(xt)
+            if mask_seq is not None:
+                xt = xt * valid_nodes.to(dtype=xt.dtype).unsqueeze(-1)
 
             out.append(xt.unsqueeze(0).unsqueeze(1))  # [1, 1, N, out_channels]
 
         x = torch.cat(out, dim=1)  # [1, T, N, out_channels]
+        if mask_seq is not None:
+            x = x * mask_seq.unsqueeze(-1)
 
         x = x.squeeze(0).permute(1, 2, 0)  # [N, out_channels, T]
         x = self.tconv(x)
         x = x.permute(2, 0, 1).unsqueeze(0)  # [1, T, N, out_channels]
+        if mask_seq is not None:
+            x = x * mask_seq.unsqueeze(-1)
 
         B, T, N, out_features = x.shape
-        x = x.reshape(B * T * N, out_features)
-        x = self.bn_temporal(x)
-        x = x.reshape(B, T, N, out_features)
+        x_flat = x.reshape(B * T * N, out_features)
+        if mask_seq is not None:
+            valid_temporal = mask_seq.reshape(B * T * N) > 0.5
+            x_flat = self._masked_batch_norm(
+                self.bn_temporal,
+                x_flat,
+                valid_temporal,
+            )
+        else:
+            x_flat = self.bn_temporal(x_flat)
+        x = x_flat.reshape(B, T, N, out_features)
         x = F.relu(x)
         x = self.dropout(x)
+        if mask_seq is not None:
+            x = x * mask_seq.unsqueeze(-1)
 
         if self.residual_proj is not None:
             residual = residual.reshape(B * T * N, in_features)
             residual = self.residual_proj(residual)
             residual = residual.reshape(B, T, N, self.out_channels)
 
-        return x + residual
+        x = x + residual
+        if mask_seq is not None:
+            x = x * mask_seq.unsqueeze(-1)
+        return x
 
 
 class STGNN(nn.Module):
@@ -168,18 +219,23 @@ class STGNN(nn.Module):
         if torch.isnan(x).any() or torch.isinf(x).any():
             x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        for block in self.st_blocks:
-            x = block(x, edge_index)
-
-        node_repr = x[:, -1, :, :]  # [B, N, hidden_channels]
-        node_pred = self.fc_out(node_repr)  # [B, N, out_channels]
-
         if mask_seq is not None:
             if mask_seq.dim() != 3 or mask_seq.shape != (B, T, N):
                 raise ValueError(
                     f"mask_seq must be [B, T, N]={((B, T, N))}, got {tuple(mask_seq.shape)}"
                 )
+            mask_seq = mask_seq.to(device=x.device, dtype=x.dtype)
+            x = x * mask_seq.unsqueeze(-1)
+
+        for block in self.st_blocks:
+            x = block(x, edge_index, mask_seq)
+
+        node_repr = x[:, -1, :, :]  # [B, N, hidden_channels]
+        node_pred = self.fc_out(node_repr)  # [B, N, out_channels]
+
+        if mask_seq is not None:
             node_mask = mask_seq[:, -1, :].to(node_pred.device).unsqueeze(-1)
+            node_pred = node_pred * node_mask
             valid_count = node_mask.sum(dim=1).clamp(min=1.0)
             out = (node_pred * node_mask).sum(dim=1) / valid_count
         else:

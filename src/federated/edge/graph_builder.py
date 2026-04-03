@@ -1,10 +1,12 @@
 """
 Graph Builder
 -------------
-Builds spatial graphs from person detections for STGNN.
+Builds stable spatial interaction graphs from tracked persons for STGNN.
 
-This is the canonical implementation used by EdgeClient.
-Logic mirrors the original RealtimeGraphBuilder from run_pipeline_realtime.py.
+Key invariants for the real-time pipeline:
+- Node ordering is deterministic across frames (sorted by track_id).
+- Spatial edges are based on interaction radius, not forced kNN density.
+- Local density reflects nearby crowding inside the interaction radius.
 """
 
 from __future__ import annotations
@@ -21,17 +23,38 @@ logger = logging.getLogger(__name__)
 # Constants
 MAX_NODES: int = 100
 MAX_VELOCITY = 0.1
+DENSITY_SATURATION_NEIGHBORS = 6
 
 class GraphBuilder:
     """
-    Build a padded kNN graph from tracked persons.
-    Matches RealtimeGraphBuilder implementation.
+    Build a padded radius-based graph from tracked persons.
+
+    Stable node ordering is critical because the temporal buffer stacks
+    node features by row index across frames.
     """
     
     def __init__(self, radius: float = 0.05, min_nodes: int = 2, max_nodes: int = MAX_NODES) -> None:
-        self.k = 5 # default neighbor count
+        if radius <= 0:
+            raise ValueError(f"radius must be > 0, got {radius}")
+        self.radius = float(radius)
         self.min_nodes = min_nodes
         self.max_nodes = int(max_nodes)
+
+    def order_tracked_persons(self, tracked_persons: List[Any]) -> List[Any]:
+        """
+        Return a deterministic node order for temporal consistency.
+
+        ByteTrack IDs are stable across frames, so sorting by track_id keeps
+        each person's feature row much more consistent over time.
+        """
+        return sorted(
+            tracked_persons,
+            key=lambda person: (
+                getattr(person, "track_id", float("inf")),
+                getattr(person, "cx", 0.0),
+                getattr(person, "cy", 0.0),
+            ),
+        )
     
     def build_graph(
         self,
@@ -50,7 +73,7 @@ class GraphBuilder:
             return None
         
         n_actual = min(len(tracked_persons), self.max_nodes)
-        persons = tracked_persons[:n_actual]
+        persons = self.order_tracked_persons(tracked_persons)[:n_actual]
         
         coords = np.zeros((n_actual, 2), dtype=np.float32)
         bbox_areas = np.zeros(n_actual, dtype=np.float32)
@@ -76,11 +99,12 @@ class GraphBuilder:
                 velocity[i, 0] = dx
                 velocity[i, 1] = dy
                 
+        distance_matrix = cdist(coords, coords)
         speed = np.sqrt(velocity[:, 0] ** 2 + velocity[:, 1] ** 2)
         heading = np.arctan2(velocity[:, 1], velocity[:, 0]) / np.pi
         
-        edge_index = self._build_knn_edges(coords)
-        local_density = self._compute_density(n_actual, edge_index)
+        edge_index = self._build_radius_edges(distance_matrix)
+        local_density = self._compute_density(distance_matrix)
         
         features = np.hstack([
             coords,                 # [N, 2]
@@ -105,51 +129,37 @@ class GraphBuilder:
             "track_ids": track_ids,
         }
         
-    def _build_knn_edges(self, coords: np.ndarray) -> np.ndarray:
-        n = coords.shape[0]
+    def _build_radius_edges(self, distance_matrix: np.ndarray) -> np.ndarray:
+        n = distance_matrix.shape[0]
         if n < 2:
             return np.zeros((2, 0), dtype=np.int64)
-            
-        k_eff = min(self.k, n - 1)
-        dists = cdist(coords, coords)
-        np.fill_diagonal(dists, np.inf)
-        
-        rows, cols = [], []
-        for i in range(n):
-            neighbors = np.argpartition(dists[i], k_eff)[:k_eff]
-            for j in neighbors:
-                rows.append(i)
-                cols.append(j)
-                
-        if not rows:
+
+        adjacency = (
+            (distance_matrix > 0.0)
+            & np.isfinite(distance_matrix)
+            & (distance_matrix <= self.radius)
+        )
+
+        rows, cols = np.where(adjacency)
+        if rows.size == 0:
             return np.zeros((2, 0), dtype=np.int64)
-            
-        rows_sym = rows + cols
-        cols_sym = cols + rows
-        edge_index = np.stack([rows_sym, cols_sym], axis=0).astype(np.int64)
+
+        return np.stack([rows, cols], axis=0).astype(np.int64)
         
-        edge_set = set()
-        unique_rows, unique_cols = [], []
-        for r, c in zip(edge_index[0], edge_index[1]):
-            if (r, c) not in edge_set:
-                edge_set.add((r, c))
-                unique_rows.append(r)
-                unique_cols.append(c)
-                
-        if not unique_rows:
-            return np.zeros((2, 0), dtype=np.int64)
-        return np.stack([unique_rows, unique_cols], axis=0).astype(np.int64)
-        
-    def _compute_density(self, n: int, edge_index: np.ndarray) -> np.ndarray:
-        density = np.zeros(n, dtype=np.float32)
-        if edge_index.shape[1] > 0:
-            for i in range(n):
-                neighbors = edge_index[1, edge_index[0] == i]
-                density[i] = len(np.unique(neighbors))
-        if self.k > 0:
-            density /= float(self.k)
-        density = np.clip(density, 0.0, 1.0)
-        return density
+    def _compute_density(self, distance_matrix: np.ndarray) -> np.ndarray:
+        n = distance_matrix.shape[0]
+        if n == 0:
+            return np.zeros(0, dtype=np.float32)
+
+        neighbor_mask = (
+            (distance_matrix > 0.0)
+            & np.isfinite(distance_matrix)
+            & (distance_matrix <= self.radius)
+        )
+        neighbor_count = neighbor_mask.sum(axis=1).astype(np.float32)
+
+        density = neighbor_count / float(DENSITY_SATURATION_NEIGHBORS)
+        return np.clip(density, 0.0, 1.0)
         
     def reset(self) -> None:
         pass

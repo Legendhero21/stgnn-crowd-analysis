@@ -11,8 +11,8 @@ interface DeviceListProps {
 
 function getAlertClass(state: AlertState): string {
     switch (state) {
-        case "STAMPEDE":
-            return "stampede";
+        case "HIGH_ALERT":
+            return "high-alert";
         case "UNSTABLE":
             return "unstable";
         default:
@@ -44,7 +44,6 @@ export function DeviceList({
                 {deviceIds.map((deviceId) => {
                     const metrics = edgeMetrics.get(deviceId);
                     const alertState = metrics?.alert_state || "NORMAL";
-                    const modelVersion = metrics?.model_version ?? 0;
 
                     return (
                         <div
@@ -54,7 +53,6 @@ export function DeviceList({
                         >
                             <div className="device-id">{deviceId}</div>
                             <div className="device-meta">
-                                <span className="device-version">v{modelVersion}</span>
                                 <span className={`alert-badge ${getAlertClass(alertState)}`}>
                                     {alertState}
                                 </span>

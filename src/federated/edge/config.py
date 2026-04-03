@@ -315,8 +315,8 @@ def create_simulation_config(
         stgnn_pytorch_path=os.path.join(base_dir, "outputs", "checkpoints", "stgnn_latest.pt"),
         output_dir=os.path.join(base_dir, "outputs", "pipeline_results"),
         video_frame_stride=4,      # Skip frames to keep end-to-end latency lower
-        processing_width=960,      # Resize 1080p inputs before detection/inference
-        yolo_imgsz=640,
+        processing_width=832,      # Shrink inputs before detection/inference to cut edge latency
+        yolo_imgsz=512,            # Smaller detector input keeps simulation responsive on modest GPUs
         display_visualization=False,  # Headless for simulation
         save_output_video=False,
     )

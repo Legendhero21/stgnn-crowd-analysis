@@ -10,7 +10,7 @@
   /* Alert state colors (neon) */
   --color-normal: #00ff88;
   --color-unstable: #ffcc00;
-  --color-stampede: #ff3366;
+  --color-high-alert: #ff3366;
   
   /* Text colors */
   --text-primary: #e0e0e0;
@@ -27,7 +27,7 @@
   /* Shadows */
   --glow-normal: 0 0 10px rgba(0, 255, 136, 0.3);
   --glow-unstable: 0 0 10px rgba(255, 204, 0, 0.3);
-  --glow-stampede: 0 0 20px rgba(255, 51, 102, 0.5);
+  --glow-high-alert: 0 0 20px rgba(255, 51, 102, 0.5);
 }
 
 * {
@@ -53,8 +53,8 @@ body {
 /* Dashboard Layout */
 .dashboard {
   display: grid;
-  grid-template-rows: 60px 1fr 200px;
-  grid-template-columns: 240px 1fr 280px;
+  grid-template-rows: 64px minmax(0, 1fr) minmax(240px, 32vh);
+  grid-template-columns: 260px minmax(0, 1fr) 320px;
   grid-template-areas:
     "topbar topbar topbar"
     "sidebar main training"
@@ -133,6 +133,7 @@ body {
   background: var(--bg-secondary);
   overflow-y: auto;
   padding: 16px;
+  min-height: 0;
 }
 
 .sidebar-title {
@@ -175,13 +176,8 @@ body {
 
 .device-meta {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
-}
-
-.device-version {
-  font-size: 11px;
-  color: var(--text-muted);
 }
 
 .alert-badge {
@@ -194,7 +190,7 @@ body {
 
 .alert-badge.normal { background: var(--color-normal); color: #000; }
 .alert-badge.unstable { background: var(--color-unstable); color: #000; }
-.alert-badge.stampede { background: var(--color-stampede); color: #fff; }
+.alert-badge.high-alert { background: var(--color-high-alert); color: #fff; }
 
 /* Main Panel (Device Metrics) */
 .main-panel {
@@ -202,6 +198,8 @@ body {
   background: var(--bg-primary);
   padding: 20px;
   overflow-y: auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .panel-title {
@@ -216,6 +214,34 @@ body {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
+}
+
+.metrics-grid.compact {
+  gap: 12px;
+  align-content: start;
+}
+
+.device-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.35fr) minmax(280px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.video-panel {
+  background: #000;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.device-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
 }
 
 .metric-card {
@@ -240,7 +266,7 @@ body {
 
 .metric-value.normal { color: var(--color-normal); text-shadow: var(--glow-normal); }
 .metric-value.unstable { color: var(--color-unstable); text-shadow: var(--glow-unstable); }
-.metric-value.stampede { color: var(--color-stampede); text-shadow: var(--glow-stampede); }
+.metric-value.high-alert { color: var(--color-high-alert); text-shadow: var(--glow-high-alert); }
 .metric-value.neutral { color: var(--accent-blue); }
 
 .metric-unit {
@@ -255,6 +281,8 @@ body {
   background: var(--bg-secondary);
   padding: 20px;
   overflow-y: auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .training-stat {
@@ -284,6 +312,8 @@ body {
   grid-area: chart;
   background: var(--bg-secondary);
   padding: 16px 20px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .chart-container {
@@ -296,13 +326,13 @@ body {
   top: 70px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--color-stampede);
+  background: var(--color-high-alert);
   color: #fff;
   padding: 12px 32px;
   border-radius: 8px;
   font-weight: 700;
   font-size: 16px;
-  box-shadow: var(--glow-stampede);
+  box-shadow: var(--glow-high-alert);
   z-index: 1000;
   animation: pulse 1s ease-in-out infinite;
 }
@@ -327,7 +357,7 @@ body {
 }
 
 .status-dot.connected { background: var(--color-normal); }
-.status-dot.disconnected { background: var(--color-stampede); }
+.status-dot.disconnected { background: var(--color-high-alert); }
 
 /* No Device Selected */
 .no-selection {
@@ -362,4 +392,20 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+@media (max-width: 1200px) {
+  .dashboard {
+    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-rows: 64px minmax(0, 1fr) minmax(220px, 28vh) minmax(220px, auto);
+    grid-template-areas:
+      "topbar topbar"
+      "sidebar main"
+      "sidebar chart"
+      "training training";
+  }
+
+  .device-layout {
+    grid-template-columns: 1fr;
+  }
 }

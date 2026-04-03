@@ -26,10 +26,6 @@ export function TopBar({ server, isConnected }: TopBarProps) {
                 {server && (
                     <>
                         <div className="server-stat">
-                            <span className="server-stat-label">Model Version</span>
-                            <span className="server-stat-value">v{server.model_version}</span>
-                        </div>
-                        <div className="server-stat">
                             <span className="server-stat-label">Round</span>
                             <span className="server-stat-value">#{server.round_id}</span>
                         </div>

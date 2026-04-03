@@ -69,6 +69,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+SUPPORTED_VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".mpeg",
+    ".mpg",
+    ".wmv",
+}
+
+
+def discover_video_sources(videos_dir: Path) -> List[str]:
+    """Return sorted video files from the project video directory."""
+    if not videos_dir.exists() or not videos_dir.is_dir():
+        return []
+
+    return sorted(
+        str(path)
+        for path in videos_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+    )
+
 
 
 
@@ -139,18 +161,11 @@ class FederatedSimulation:
         self.server = FederatedServer(self.server_config)
         
         # 2. Create clients with REAL EdgeClients
-        default_video = str(
-            Path(__file__).parent.parent / "data" / "videos" / "test_crowd.mp4"
-        )
         base_dir = str(_project_root)
         
         for i in range(self.num_clients):
             device_id = f"edge_{i:02d}"
-            video_path = (
-                self.video_sources[i % len(self.video_sources)]
-                if self.video_sources
-                else default_video
-            )
+            video_path = self.video_sources[i]
             
             # Create real EdgeConfig via factory
             edge_config = create_simulation_config(
@@ -423,15 +438,40 @@ def main():
     
     args = parser.parse_args()
     
-    video_sources = [v.strip() for v in args.videos.split(",") if v.strip()]
-    if video_sources:
-        logger.info("Using %d custom video source(s)", len(video_sources))
-        for idx, path in enumerate(video_sources):
-            logger.info("  video[%d]=%s", idx, path)
+    videos_dir = _project_root / "data" / "videos"
+    cli_video_sources = [v.strip() for v in args.videos.split(",") if v.strip()]
+
+    if cli_video_sources:
+        video_sources = cli_video_sources
+        logger.info("Using %d video source(s) from --videos", len(video_sources))
+    else:
+        video_sources = discover_video_sources(videos_dir)
+        logger.info(
+            "Discovered %d video source(s) in %s",
+            len(video_sources),
+            videos_dir,
+        )
+
+    if not video_sources:
+        raise FileNotFoundError(
+            "No video sources available. "
+            f"Add files to {videos_dir} or pass --videos."
+        )
+
+    effective_num_clients = len(video_sources)
+    if args.num_clients != effective_num_clients:
+        logger.info(
+            "Overriding requested num_clients=%d to match available videos=%d",
+            args.num_clients,
+            effective_num_clients,
+        )
+
+    for idx, path in enumerate(video_sources):
+        logger.info("  edge_%02d -> %s", idx, path)
     
     # Create and run simulation
     sim = FederatedSimulation(
-        num_clients=args.num_clients,
+        num_clients=effective_num_clients,
         samples_per_client=args.samples,
         video_sources=video_sources,
     )
@@ -448,17 +488,16 @@ def main():
     print("WebSocket: ws://127.0.0.1:%d/ws/analytics" % args.port)
     print("=" * 60 + "\n")
     
-    sim.run_simulation(num_rounds=args.rounds, auto_cleanup=not args.dashboard_only)
-    
-    if args.dashboard_only:
-        print("\nDashboard still running. Press Ctrl+C to exit.")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            sim.cleanup()
+    sim.run_simulation(num_rounds=args.rounds, auto_cleanup=False)
+
+    print("\nFederated rounds complete. Edge/video feeds are still running. Press Ctrl+C to exit.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sim.cleanup()
 
 
 if __name__ == "__main__":

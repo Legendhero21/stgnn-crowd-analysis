@@ -25,7 +25,7 @@ batch_size: 16
 
 # PyTorch device for training
 # Options: "cpu", "cuda", "cuda:0", etc.
-device: "cpu"
+device: "cuda"
 
 # Model architecture configuration
 # These are passed to the STGNN constructor.

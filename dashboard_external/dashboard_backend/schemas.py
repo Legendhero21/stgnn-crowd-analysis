@@ -32,7 +32,7 @@ class AlertState(str, Enum):
     """
     NORMAL = "NORMAL"
     UNSTABLE = "UNSTABLE"
-    STAMPEDE = "STAMPEDE"
+    HIGH_ALERT = "HIGH_ALERT"
 
 
 class ClientState(str, Enum):

@@ -60,11 +60,6 @@ export function TrainingStatus({ status }: TrainingStatusProps) {
                 <div className="training-label">Samples Buffered</div>
                 <div className="training-value">{status.samples_buffered}</div>
             </div>
-
-            <div className="training-stat">
-                <div className="training-label">Model Version</div>
-                <div className="training-value">v{status.model_version}</div>
-            </div>
         </aside>
     );
 }

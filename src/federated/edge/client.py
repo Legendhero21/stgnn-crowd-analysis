@@ -75,7 +75,7 @@ class FrameResult:
     metrics: Dict[str, float]
     
     # Alert state
-    alert_state: str  # "NORMAL", "UNSTABLE", "STAMPEDE"
+    alert_state: str  # "NORMAL", "UNSTABLE", "HIGH_ALERT"
     
     # Model info
     model_version: int
@@ -419,6 +419,7 @@ class EdgeClient:
         # 1. ByteTrack detection
         try:
             tracked_persons = self._tracker.update(frame)
+            tracked_persons = self._graph_builder.order_tracked_persons(tracked_persons)
             centers = [(p.cx, p.cy) for p in tracked_persons]
         except Exception as exc:
             logger.error("ByteTrack detection failed: %s", exc)
@@ -583,7 +584,7 @@ class EdgeClient:
         colors = {
             "NORMAL": (0, 255, 0),
             "UNSTABLE": (0, 255, 255),
-            "STAMPEDE": (0, 0, 255),
+            "HIGH_ALERT": (0, 0, 255),
         }
         color = colors.get(state, (255, 255, 255))
         

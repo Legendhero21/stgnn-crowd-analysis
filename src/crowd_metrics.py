@@ -6,6 +6,8 @@ from typing import Dict, Mapping, Union
 import numpy as np
 
 ArrayLike = Union[np.ndarray]
+MIN_MOVING_NODES_FOR_ENTROPY = 3
+MOTION_SPEED_EPSILON = 0.003
 
 
 @dataclass(frozen=True)
@@ -34,7 +36,7 @@ class CrowdMetrics:
     Computes interpretable crowd-level metrics from graph node features.
 
     Expected node feature format by default:
-        x = [x, y, dx, dy, density]
+        x = [x, y, dx, dy, speed, heading, density, bbox_area]
 
     Production-oriented notes:
     - Pure, stateless API.
@@ -115,12 +117,23 @@ class CrowdMetrics:
         if speed.size == 0 or density.size == 0:
             return CrowdMetrics._empty()
 
+        moving_mask = speed > MOTION_SPEED_EPSILON
+        if np.count_nonzero(moving_mask) >= MIN_MOVING_NODES_FOR_ENTROPY:
+            motion_entropy = CrowdMetrics._motion_entropy(
+                dx[moving_mask],
+                dy[moving_mask],
+            )
+        else:
+            motion_entropy = 0.0
+
         metrics = {
+            "active_nodes": float(N),
+            "moving_nodes": float(np.count_nonzero(moving_mask)),
             "mean_speed": float(np.mean(speed)),
             "speed_std": float(np.std(speed)),
-            "mean_density": float(np.mean(density)),
-            "max_density": float(np.max(density)),
-            "motion_entropy": CrowdMetrics._motion_entropy(dx, dy),
+            "mean_density": float(np.mean(np.clip(density, 0.0, 1.0))),
+            "max_density": float(np.max(np.clip(density, 0.0, 1.0))),
+            "motion_entropy": motion_entropy,
         }
 
         return metrics
@@ -176,6 +189,8 @@ class CrowdMetrics:
     @staticmethod
     def _empty() -> Dict[str, float]:
         return {
+            "active_nodes": 0.0,
+            "moving_nodes": 0.0,
             "mean_speed": 0.0,
             "speed_std": 0.0,
             "mean_density": 0.0,
