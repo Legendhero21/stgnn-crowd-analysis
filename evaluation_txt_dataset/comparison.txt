@@ -1,0 +1,14 @@
+
+YOLOV8:
+mae: 129.0800
+rmse: 137.2402
+precision: 0.4474
+recall: 0.0534
+f1: 0.0954
+
+YOLO11:
+mae: 23.1333
+rmse: 29.4335
+precision: 0.6458
+recall: 0.7218
+f1: 0.6817

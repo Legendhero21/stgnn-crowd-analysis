@@ -14,12 +14,12 @@ import re
 # ==========================================================
 IMAGES_DIR = "D:/stgnn_project/data/mat_dataset/images"
 OUTPUT_DIR = "D:/stgnn_project/data/videos"
-OUTPUT_FILENAME = "mat_dataset_full.mp4"
+OUTPUT_FILENAME = "mat_dataset_full4.mp4"
 
 # Video settings
 FPS = 10  # Frames per second (adjust as needed: 5=slow, 10=normal, 30=fast)
-START_FRAME = 1001  # img001001.jpg
-END_FRAME = 2300    # img002300.jpg
+START_FRAME = 76001  # img001001.jpg
+END_FRAME = 77300    # img002300.jpg
 
 
 # ==========================================================

@@ -21,6 +21,7 @@ import os
 import sys
 import threading
 import time
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Any
@@ -160,6 +161,9 @@ class EdgeClient:
         self._latest_result: Optional[FrameResult] = None
         self._latest_frame: Optional[np.ndarray] = None  # raw BGR for streaming
         self._frame_count = 0
+        # Latency logging
+        self._latency_log_path = f"logs/{self._device_id}_latency.jsonl"
+        os.makedirs("logs", exist_ok=True)
         self._start_time: Optional[float] = None
         
         # Delayed graph for training sample creation
@@ -408,7 +412,14 @@ class EdgeClient:
             FrameResult or None if processing failed.
         """
         start_time = time.time()
+        # Stage timers
+        t0 = time.time()
         
+        t1 = t0
+        t2 = t0
+        t3 = t0  
+        t4 = t0
+        t5 = t0
         frame = frame_data.frame
         if self._config.processing_width > 0 and frame.shape[1] > self._config.processing_width:
             new_w = int(self._config.processing_width)
@@ -419,6 +430,7 @@ class EdgeClient:
         # 1. ByteTrack detection
         try:
             tracked_persons = self._tracker.update(frame)
+            t1 = time.time()
             tracked_persons = self._graph_builder.order_tracked_persons(tracked_persons)
             centers = [(p.cx, p.cy) for p in tracked_persons]
         except Exception as exc:
@@ -429,7 +441,7 @@ class EdgeClient:
         # 2. Graph building
         prev_positions = self._tracker.get_previous_positions()
         graph = self._graph_builder.build_graph(tracked_persons, frame.shape[:2], prev_positions)
-        
+        t2 = time.time()
         if len(tracked_persons) > 0:
             h_frame, w_frame = frame.shape[:2]
             current_positions = self._tracker.get_previous_positions()
@@ -456,11 +468,14 @@ class EdgeClient:
 
                     score_tensor = preds if preds.numel() == 1 else preds.mean()
                     anomaly_score = float(np.clip(score_tensor.item(), 0.0, 1.0))
+                    t3 = time.time()
             except Exception as exc:
                 logger.error("STGNN inference failed: %s", exc)
                 anomaly_score = 0.0
+                t3 = time.time()
         else:
             anomaly_score = 0.0
+            t3 = time.time()
         
         # 5. Training sample collection (delayed by one frame)
         # Determine current node count for stability check
@@ -496,9 +511,10 @@ class EdgeClient:
         
         # 7. Alert logic
         alert_state = self._alert_logic.update(anomaly_score, metrics)
-        
+        t4 = time.time()
         # 8. Draw visualization overlay (always, for streaming)
         vis_frame = self._draw_visualization(frame, centers, graph, anomaly_score, alert_state)
+        t5 = time.time()
         with self._lock:
             self._latest_frame = vis_frame
         
@@ -507,6 +523,30 @@ class EdgeClient:
             self._video_writer.write(vis_frame)
         
         processing_time_ms = (time.time() - start_time) * 1000
+
+        # ================= LATENCY LOG =================
+        log_entry = {
+            "frame": frame_idx,
+            "device": self._device_id,
+            "num_persons": len(centers),
+            "anomaly_score": anomaly_score,
+            "alert": alert_state,
+
+            "latency_ms": {
+                "yolo_tracking": (t1 - t0) * 1000,
+                "graph": (t2 - t1) * 1000,
+                "stgnn": max(0, (t3 - t2) * 1000),
+                "alert": (t4 - t3) * 1000,
+                "visualization": (t5 - t4) * 1000,
+                "total": (t5 - start_time) * 1000
+            }
+        }
+
+        try:
+            with open(self._latency_log_path, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception as e:
+            logger.error("Latency logging failed: %s", e)
         
         return FrameResult(
             frame_idx=frame_idx,

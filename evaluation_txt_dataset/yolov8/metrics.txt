@@ -1,0 +1,8 @@
+=== COUNT METRICS (Reliable) ===
+MAE: 129.0800
+RMSE: 137.2402
+
+=== DETECTION METRICS (Heuristic) ===
+Precision: 0.4474
+Recall: 0.0534
+F1: 0.0954

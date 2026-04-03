@@ -1,0 +1,5 @@
+Precision: 0.0220
+Recall: 0.0425
+F1: 0.0290
+MAE (count): 31.9252
+RMSE (count): 47.6836
