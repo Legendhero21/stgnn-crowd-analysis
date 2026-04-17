@@ -16,6 +16,7 @@ Key responsibilities:
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 import os
 import sys
@@ -24,7 +25,7 @@ import time
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -174,6 +175,11 @@ class EdgeClient:
         self._previous_node_count: int = 0  # Guard against node count changes
         self._previous_frame_idx: int = 0
         
+        # Keep anomaly interpretation relative to the active model version.
+        self._raw_score_history: Deque[float] = deque(maxlen=100)
+        self._raw_score_warmup: int = 20
+        self._anomaly_history: Deque[float] = deque(maxlen=10)
+        
         logger.info("EdgeClient created: device_id=%s", self._device_id)
     
     def _generate_device_id(self) -> str:
@@ -185,6 +191,35 @@ class EdgeClient:
         hostname = platform.node()[:8] if platform.node() else "edge"
         short_uuid = str(uuid.uuid4())[:8]
         return f"{hostname}-{short_uuid}"
+
+    def _normalize_model_score(self, raw_score: float) -> float:
+        """
+        Convert the raw model output into a relative anomaly score in [0, 1].
+
+        A rolling percentile rank is more stable than absolute thresholding
+        when federated updates shift the scalar head's output scale.
+        """
+        bounded_score = float(np.clip(raw_score, 0.0, 1.0))
+        history = np.asarray(self._raw_score_history, dtype=np.float32)
+
+        if history.size < self._raw_score_warmup:
+            normalized_score = 0.5
+        else:
+            less_fraction = float(np.mean(history < bounded_score))
+            equal_fraction = float(np.mean(history == bounded_score))
+            normalized_score = less_fraction + 0.5 * equal_fraction
+
+        self._raw_score_history.append(bounded_score)
+
+        # ----------- NEW (SAFE ADDITION) -----------
+        # smoothing
+        self._anomaly_history.append(normalized_score)
+        smoothed = sum(self._anomaly_history) / len(self._anomaly_history)
+
+        # clamp extremes (avoid fake 0 / 1 spikes)
+        smoothed = min(max(smoothed, 0.05), 0.95)
+
+        return float(smoothed)
     
     def initialize(self) -> bool:
         """
@@ -455,6 +490,7 @@ class EdgeClient:
         x_seq, mask_seq = self._temporal_buffer.push(graph)
         
         # 4. PyTorch STGNN inference — scalar crowd-level anomaly score
+        raw_model_score = 0.0
         if x_seq is not None and mask_seq is not None and graph is not None:
             edge_index = graph["edge_index"]
             try:
@@ -463,11 +499,12 @@ class EdgeClient:
                     edge_tensor = torch.from_numpy(edge_index).long().to(self.device)
 
                     mask_tensor = torch.from_numpy(mask_seq).float().to(self.device)
-                    with self._lock:
+                    with self._lock, torch.amp.autocast(device_type=self.device.type, enabled=(self.device.type == "cuda")):
                         preds = self.model(x_tensor, edge_tensor, mask_tensor)  # [1, 1]
 
                     score_tensor = preds if preds.numel() == 1 else preds.mean()
-                    anomaly_score = float(np.clip(score_tensor.item(), 0.0, 1.0))
+                    raw_model_score = float(score_tensor.item())
+                    anomaly_score = self._normalize_model_score(raw_model_score)
                     t3 = time.time()
             except Exception as exc:
                 logger.error("STGNN inference failed: %s", exc)
@@ -529,6 +566,7 @@ class EdgeClient:
             "frame": frame_idx,
             "device": self._device_id,
             "num_persons": len(centers),
+            "raw_model_score": raw_model_score,
             "anomaly_score": anomaly_score,
             "alert": alert_state,
 
@@ -781,6 +819,12 @@ class EdgeClient:
                 self.model.to(self.device)
                 self.model.eval()
                 self._model_version = new_version
+                self._raw_score_history.clear()
+                self._previous_x_seq = None
+                self._previous_mask_seq = None
+                self._previous_edge_index = None
+                self._previous_node_count = 0
+                self._previous_frame_idx = 0
 
             logger.info("Hot-swapped STGNN model to version %d", new_version)
             return True

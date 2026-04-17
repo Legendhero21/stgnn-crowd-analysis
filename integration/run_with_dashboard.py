@@ -123,25 +123,31 @@ class FederatedSimulation:
         self,
         num_clients: int = 3,
         samples_per_client: int = 100,
-        min_clients: int = 2,
+        min_clients: Optional[int] = None,
         round_timeout_sec: float = 10.0,
         video_sources: Optional[List[str]] = None,
     ):
         self.num_clients = num_clients
         self.samples_per_client = samples_per_client
         self.video_sources = video_sources or []
+        effective_min_clients = num_clients if min_clients is None else max(min_clients, num_clients)
         
         # Server config
         initial_weights_path = str(
             _project_root / "outputs" / "checkpoints" / "stgnn_latest.pt"
         )
         self.server_config = ServerConfig(
-            min_clients=min_clients,
+            min_clients=effective_min_clients,
             round_timeout_sec=round_timeout_sec,
             enable_timeout_watcher=False,
             model_class=STGNN,
             model_kwargs=dict(FEDERATED_EDGE_STGNN_KWARGS),
             model_init_path=initial_weights_path,
+        )
+        logger.info(
+            "FederatedSimulation configured for full participation: min_clients=%d/%d",
+            self.server_config.min_clients,
+            self.num_clients,
         )
         
         # Components
@@ -357,6 +363,13 @@ class FederatedSimulation:
                     server_stats["model_version"],
                     server_stats["round_id"],
                     server_stats["round_status"],
+                )
+                round_info = self.server.get_round_info()
+                logger.info(
+                    "Round %d participation: %d/%d clients",
+                    round_num + 1,
+                    len(round_info.participating_devices),
+                    len(active_client_ids),
                 )
                 
                 # Small delay between rounds

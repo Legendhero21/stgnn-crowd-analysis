@@ -90,26 +90,39 @@ class STGCNBlock(nn.Module):
 
         residual = x
 
-        out = []
-        for t in range(T):
-            xt = x[:, t, :, :].squeeze(0)  # [N, in_features]
-            if torch.isnan(xt).any() or torch.isinf(xt).any():
-                xt = torch.nan_to_num(xt, nan=0.0, posinf=1e6, neginf=-1e6)
+        # --- Batched spatial GCN: all T timesteps in one call ---
+        # [1, T, N, F] -> [T*N, F]
+        x_flat = x.squeeze(0).reshape(T * N, in_features)
 
-            xt = self.gcn(xt, edge_index)
-            if mask_seq is not None:
-                valid_nodes = mask_seq[:, t, :].reshape(-1) > 0.5
-                xt = self._masked_batch_norm(self.bn_spatial, xt, valid_nodes)
-            else:
-                xt = self.bn_spatial(xt)
-            xt = F.relu(xt)
-            xt = self.dropout(xt)
-            if mask_seq is not None:
-                xt = xt * valid_nodes.to(dtype=xt.dtype).unsqueeze(-1)
+        if torch.isnan(x_flat).any() or torch.isinf(x_flat).any():
+            x_flat = torch.nan_to_num(x_flat, nan=0.0, posinf=1e6, neginf=-1e6)
 
-            out.append(xt.unsqueeze(0).unsqueeze(1))  # [1, 1, N, out_channels]
+        # Block-diagonal edge_index: no cross-timestep messages
+        if edge_index.shape[1] > 0:
+            offsets = torch.arange(T, device=edge_index.device) * N
+            edge_index_batched = torch.cat(
+                [edge_index + off for off in offsets], dim=1
+            )
+        else:
+            edge_index_batched = edge_index
 
-        x = torch.cat(out, dim=1)  # [1, T, N, out_channels]
+        x_flat = self.gcn(x_flat, edge_index_batched)
+
+        if mask_seq is not None:
+            valid_mask = mask_seq.squeeze(0).reshape(T * N) > 0.5
+            x_flat = self._masked_batch_norm(self.bn_spatial, x_flat, valid_mask)
+        else:
+            x_flat = self.bn_spatial(x_flat)
+
+        x_flat = F.relu(x_flat)
+        x_flat = self.dropout(x_flat)
+
+        if mask_seq is not None:
+            x_flat = x_flat * valid_mask.to(dtype=x_flat.dtype).unsqueeze(-1)
+
+        # [T*N, out_ch] -> [1, T, N, out_ch]
+        x = x_flat.reshape(T, N, -1).unsqueeze(0)
+
         if mask_seq is not None:
             x = x * mask_seq.unsqueeze(-1)
 
