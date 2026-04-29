@@ -20,6 +20,15 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
+import torch
+from pathlib import Path
+
+SHARED_DIR = r"\\VEDANTG\BE_Project_edge"
+UPDATES_DIR = os.path.join(SHARED_DIR, "updates")
+
+os.makedirs(UPDATES_DIR, exist_ok=True)
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
@@ -181,18 +190,7 @@ class LocalTransport:
         num_samples: int,
         base_version: int,
     ) -> UpdateAck:
-        """
-        Submit model update to server.
         
-        Args:
-            device_id: Device submitting the update.
-            state_dict: Updated model weights.
-            num_samples: Number of samples used for training.
-            base_version: Model version the update is based on.
-        
-        Returns:
-            UpdateAck with submission result.
-        """
         msg = SubmitUpdate(
             device_id=device_id,
             state_dict=state_dict,
@@ -200,7 +198,7 @@ class LocalTransport:
             base_version=base_version,
         )
         
-        ack = self._server.submit_update(msg)
+        """ack = self._server.submit_update(msg)
         
         if ack.success:
             logger.info(
@@ -213,25 +211,25 @@ class LocalTransport:
                 device_id, ack.error_message,
             )
         
-        return ack
+        return ack"""
+        # -------- FILE-BASED UPDATE --------
+        update_path = os.path.join(UPDATES_DIR, f"{device_id}.pt")
+
+        temp_path = update_path + ".tmp"
+        torch.save(data, temp_path)
+        os.replace(temp_path, update_path)
+
+        logger.info("Device %s wrote update to %s", device_id, update_path)
+
+        # fake ack (since no server call)
+        return UpdateAck(success=True, round_id=0, error_message=None)
     
     def poll_aggregated_model(
         self,
         device_id: str,
     ) -> Optional[AggregatedModel]:
-        """
-        Poll for new aggregated model.
         
-        This is a non-blocking call. Returns None if no new model
-        is available.
-        
-        Args:
-            device_id: Device requesting the model.
-        
-        Returns:
-            AggregatedModel if available, None otherwise.
-        """
-        model = self._server.get_aggregated_model(device_id)
+        """model = self._server.get_aggregated_model(device_id)
         
         if model is not None:
             logger.info(
@@ -239,7 +237,27 @@ class LocalTransport:
                 device_id, model.version,
             )
         
-        return model
+        return model"""
+        # -------- FILE-BASED MODEL FETCH --------
+        model_path = os.path.join(SHARED_DIR, "global_model.pt")
+        version_path = os.path.join(SHARED_DIR, "version.txt")
+
+        if not os.path.exists(model_path) or not os.path.exists(version_path):
+            return None
+
+        try:
+            version = int(open(version_path).read().strip())
+            state_dict = torch.load(model_path, map_location="cpu")
+
+            logger.info("Device %s loaded global model v%d", device_id, version)
+
+            return AggregatedModel(
+                version=version,
+                state_dict=state_dict
+            )
+        except Exception as e:
+            logger.error("Failed to load global model: %s", str(e))
+            return None
     
     def send_heartbeat(
         self,

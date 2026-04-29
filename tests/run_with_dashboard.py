@@ -34,8 +34,13 @@ import os
 import sys
 import threading
 import time
+import os
+import torch
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+SHARED_DIR = r"\\VEDANTG\BE_Project_edge"
+UPDATES_DIR = os.path.join(SHARED_DIR, "updates")
 
 # Add paths
 _project_root = Path(__file__).parent.parent
@@ -113,7 +118,47 @@ def run_dashboard_server(host: str = "127.0.0.1", port: int = 8000) -> None:
 # ============================================================
 # SIMULATION RUNNER
 # ============================================================
+class DummyClient:
+    """Lightweight stand-in for FederatedClient in distributed mode.
 
+    Returns the full dict schema that DashboardAdapter / Pydantic
+    TrainingStatus + EdgeMetrics expect, sourced from the server's
+    DeviceRegistry.
+    """
+
+    def __init__(self, device_id, server):
+        self.device_id = device_id
+        self._server = server
+
+    def get_stats(self):
+        try:
+            device_info = self._server.registry.get(self.device_id)
+            if device_info is not None:
+                return {
+                    "device_id": self.device_id,
+                    "state": "COLLECTING",
+                    "model_version": device_info.current_model_version,
+                    "is_registered": True,
+                    "training_rounds": 0,
+                    "samples_trained": device_info.last_update_samples,
+                    "samples_buffered": device_info.last_sample_count,
+                    "last_training_time": device_info.last_seen,
+                }
+        except Exception:
+            pass
+        # Fallback: return safe defaults for every required key
+        return {
+            "device_id": self.device_id,
+            "state": "IDLE",
+            "model_version": 0,
+            "is_registered": False,
+            "training_rounds": 0,
+            "samples_trained": 0,
+            "samples_buffered": 0,
+            "last_training_time": None,
+        }
+
+            
 class FederatedSimulation:
     """
     Runs federated learning simulation with dashboard integration.
@@ -130,7 +175,7 @@ class FederatedSimulation:
         self.num_clients = num_clients
         self.samples_per_client = samples_per_client
         self.video_sources = video_sources or []
-        effective_min_clients = num_clients if min_clients is None else max(min_clients, num_clients)
+        effective_min_clients = 1
         
         # Server config
         initial_weights_path = str(
@@ -166,7 +211,7 @@ class FederatedSimulation:
         # 1. Create server
         self.server = FederatedServer(self.server_config)
         
-        # 2. Create clients with REAL EdgeClients
+        """# 2. Create clients with REAL EdgeClients
         base_dir = str(_project_root)
         
         for i in range(self.num_clients):
@@ -226,8 +271,23 @@ class FederatedSimulation:
         logger.info(
             "Simulation setup complete: %d real edge clients",
             len(self.clients),
+        )"""
+
+        # Distributed mode: no local FederatedClient objects.
+        # DummyClient (module-level) bridges server registry → adapter.
+        self.clients = {}
+
+        self.adapter = DashboardAdapter(
+            server=self.server,
+            clients=self.clients,
         )
-    
+
+        # CRITICAL: inject adapter so dashboard backend can broadcast data
+        dashboard_main.set_adapter(self.adapter)
+
+        # Start file-based update watcher
+        threading.Thread(target=self._file_update_watcher, daemon=True).start()
+        
     def start_dashboard(self, port: int = 8000) -> None:
         """Start dashboard server in background."""
         self._dashboard_thread = threading.Thread(
@@ -238,19 +298,8 @@ class FederatedSimulation:
         self._dashboard_thread.start()
         logger.info("Dashboard started at http://127.0.0.1:%d", port)
     
-    def run_simulation(self, num_rounds: int = 3, auto_cleanup: bool = True) -> None:
-        """
-        Run federated learning simulation with real edge pipeline.
-        
-        EdgeClient.start() launches background threads that process
-        video → YOLO → Graph → STGNN → Alert → TrainingBuffer.
-        We then wait for enough training samples to accumulate
-        before triggering training cycles.
-        
-        Args:
-            num_rounds: Number of federated rounds to run.
-            auto_cleanup: If True, stop clients/server when simulation ends.
-        """
+    """def run_simulation(self, num_rounds: int = 3, auto_cleanup: bool = True) -> None:
+    
         logger.info("Starting simulation (%d rounds)...", num_rounds)
         
         try:
@@ -383,8 +432,99 @@ class FederatedSimulation:
             logger.info("Simulation interrupted")
         finally:
             if auto_cleanup:
-                self.cleanup()
+                self.cleanup()"""
     
+
+    def run_simulation(self, *args, **kwargs):
+        logger.info("Server-only mode: waiting for external edge clients...")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
+    def _file_update_watcher(self):
+        """Continuously watch for edge updates and feed server."""
+        # Track mtime per file so re-written files are re-processed
+        last_mtime: Dict[str, float] = {}
+
+        from federated.protocol.messages import SubmitUpdate, RegisterDevice
+
+        logger.info("File-based update watcher started...")
+
+        while True:
+            try:
+                if not os.path.isdir(UPDATES_DIR):
+                    time.sleep(2)
+                    continue
+
+                for fname in os.listdir(UPDATES_DIR):
+                    if not fname.endswith(".pt"):
+                        continue
+
+                    fpath = os.path.join(UPDATES_DIR, fname)
+
+                    # Skip if mtime hasn't changed (file not re-written)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        continue
+                    if fpath in last_mtime and last_mtime[fpath] >= mtime:
+                        continue
+
+                    try:
+                        data = torch.load(fpath, map_location="cpu")
+
+                        device_id = fname.replace(".pt", "")
+
+                        # Register DummyClient for dashboard visibility
+                        if device_id not in self.clients:
+                            self.clients[device_id] = DummyClient(device_id, self.server)
+
+                        state_dict = data["state_dict"]
+                        num_samples = data["num_samples"]
+                        base_version = data["base_version"]
+
+                        logger.info("Reading update from %s", device_id)
+
+                        # Ensure device is registered with server
+                        self.server.register_device(
+                            RegisterDevice(
+                                device_id=device_id,
+                                device_type="laptop",
+                                current_model_version=base_version,
+                            )
+                        )
+
+                        msg = SubmitUpdate(
+                            device_id=device_id,
+                            state_dict=state_dict,
+                            num_samples=num_samples,
+                            base_version=base_version,
+                        )
+
+                        ack = self.server.submit_update(msg)
+
+                        if ack.success:
+                            logger.info("Accepted update from %s", device_id)
+                            last_mtime[fpath] = mtime
+                        else:
+                            logger.warning(
+                                "Update rejected from %s: %s",
+                                device_id, ack.error_message,
+                            )
+
+                    except Exception as e:
+                        logger.error("Failed to process %s: %s", fname, str(e))
+
+                time.sleep(2)
+
+            except Exception as e:
+                logger.error("Watcher error: %s", str(e))
+                time.sleep(5)
+
+
+
     def cleanup(self) -> None:
         """Clean up resources."""
         for client in self.clients.values():
